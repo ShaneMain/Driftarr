@@ -1,0 +1,7 @@
+services:
+  default:
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-America/New_York}
+    labels:
+      autoheal: "true"
