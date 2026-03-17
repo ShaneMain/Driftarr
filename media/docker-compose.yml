@@ -1,0 +1,73 @@
+services:
+  sonarr:
+    extends:
+      file: ./common.yml
+      service: default
+    image: ghcr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    ports:
+      - "8989:8989"
+    volumes:
+      - ${DOCKER_DIR}/sonarr:/config
+      - ${MEDIA_DIR}:/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8989/ping"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  radarr:
+    extends:
+      file: ./common.yml
+      service: default
+    image: ghcr.io/linuxserver/radarr:latest
+    container_name: radarr
+    ports:
+      - "7878:7878"
+    volumes:
+      - ${DOCKER_DIR}/radarr:/config
+      - ${MEDIA_DIR}:/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7878/ping"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  bazarr:
+    extends:
+      file: ./common.yml
+      service: default
+    image: ghcr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    ports:
+      - "6767:6767"
+    volumes:
+      - ${DOCKER_DIR}/bazarr:/config
+      - ${MEDIA_DIR}:/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6767"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  nzbget:
+    extends:
+      file: ./common.yml
+      service: default
+    image: ghcr.io/linuxserver/nzbget:latest
+    container_name: nzbget
+    ports:
+      - "6789:6789"
+    volumes:
+      - ${DOCKER_DIR}/nzbget:/config
+      - ${DOWNLOADS_DIR}:/downloads
+      - ${MEDIA_DIR}:/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6789"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
