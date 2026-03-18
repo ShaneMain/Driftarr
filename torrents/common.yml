@@ -1,0 +1,8 @@
+services:
+  default:
+    extends:
+      file: ../common.yml
+      service: default
+    environment:
+      PUID: "1000"
+      PGID: "1000"
