@@ -1,0 +1,6 @@
+# Root compose — includes all stacks
+# Add or remove stacks as needed
+include:
+  - media/docker-compose.yml
+  - torrents/docker-compose.yml
+  # - monitoring/docker-compose.yml
