@@ -71,3 +71,24 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  # One-shot container that syncs custom formats, profile scores, quality
+  # definitions, naming, media management, and root folders from the
+  # configs/ JSON files. Runs once after Sonarr/Radarr are healthy, then exits.
+  config-sync:
+    build:
+      context: ../configs
+      dockerfile: Dockerfile
+    container_name: config-sync
+    volumes:
+      - ../configs/data:/configs/data
+      - ${DOCKER_DIR}/radarr:/radarr-config:ro
+      - ${DOCKER_DIR}/sonarr:/sonarr-config:ro
+    environment:
+      SEERR_API_KEY: ${SEERR_API_KEY:-}
+    depends_on:
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
+    restart: "no"
