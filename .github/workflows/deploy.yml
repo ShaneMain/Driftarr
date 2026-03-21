@@ -1,0 +1,35 @@
+# Deploy workflow — copy this to your own repo and configure secrets
+# See docs/server-setup.md for required GitHub Secrets
+#
+# To enable: remove the `if: false` line below and add your secrets
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: false  # Template only — remove this line after configuring secrets
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Deploy via SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh -o StrictHostKeyChecking=no \
+              -o RequestTTY=no \
+              -i ~/.ssh/deploy_key \
+              deploy@${{ secrets.DEPLOY_HOST }} 2>&1
