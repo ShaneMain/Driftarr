@@ -12,7 +12,7 @@
 
 A production-ready CI/CD framework for self-hosted Docker Compose infrastructure. Push to `main` and only the stacks that changed get redeployed — with automatic rollback, zero-trust networking, and GitOps-driven configuration management.
 
-Service configs (custom formats, quality profiles, naming conventions) are version-controlled as JSON and bidirectionally synced — code pushes to APIs at deploy time, UI changes export back to git on a cron. Delete a config file and the corresponding resources get removed from the live service.
+Service configs (custom formats, quality profiles, naming conventions) are version-controlled as JSON and bidirectionally synced — code pushes to APIs at deploy time, UI changes export back to git on a cron. The repo is the single source of truth: delete a config file and the corresponding resources get removed from the live service. No config data ships with the template — the first export bootstraps `configs/data/` from your live services as a baseline.
 
 No more SSHing into servers to run `docker compose up -d` by hand.
 
@@ -37,7 +37,7 @@ The deploy pipeline, security model, and config sync engine are the core value. 
 - **Composable stack architecture** — hierarchical `common.yml` inheritance for DRY fleet-wide and per-stack defaults
 - **Hot-reload support** — deploy.sh detects config-only changes and can reload services without full restarts
 - **Structured deploy logging** — before/after container state snapshots, config diffs, and a deploy summary streamed to your terminal via GitHub Actions
-- **CI validation** — compose file syntax, shell script linting, Python compilation, and project structure checks on every push and PR
+- **CI validation** — compose file syntax, shell script syntax checking, Python compilation, and project structure checks on every push and PR
 
 ## Quick Start
 
@@ -217,10 +217,12 @@ The `configs/` directory implements a bidirectional GitOps loop for service conf
         └──── git commit/push ─────────────┘
 ```
 
-- **Sync** (push): runs as a one-shot container on every deploy (diff-agnostic, idempotent), reads JSON from `configs/data/` and pushes to service APIs
+The repo is the single source of truth. `configs/data/` ships empty — the first export run bootstraps it by pulling your live service configs as a baseline. From that point on:
+
+- **Sync** (push): runs as a one-shot container on every deploy (diff-agnostic, idempotent), reads JSON from `configs/data/` and pushes to service APIs. If a file is missing, all corresponding resources are deleted from the API.
 - **Export** (pull): runs on a host cron, pulls current config from APIs, diffs against git, and commits/pushes changes
 
-Fully declarative: JSON files are the source of truth. Deleting a config file removes all corresponding resources from the live API. Singleton configs (naming, media management) skip when the file is absent.
+Fully declarative: the JSON files define the desired state. Resources in the API that aren't in the JSON get deleted. Singleton configs (naming, media management) skip when the file is absent.
 
 Loop prevention:
 1. Sync writes a marker file — export skips if the marker is less than 5 minutes old
@@ -329,7 +331,7 @@ Drop a Python file in `configs/sync/modules/` — it's auto-discovered. See the 
 0 * * * * /path/to/docker-stacks/configs/run-export.sh >> /var/log/config-export.log 2>&1
 ```
 
-The first run bootstraps `configs/data/` by pulling live configs from service APIs. No manual seeding needed.
+The first run bootstraps `configs/data/` by pulling live configs from your services — this becomes your baseline. No sample configs ship with the template because every setup is different. From there, any changes you make in the UI get captured back into git automatically.
 
 Preview before applying:
 

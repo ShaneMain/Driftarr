@@ -64,7 +64,8 @@ CHANGED=$(git diff --name-only "$BEFORE" "$AFTER")
 # Auto-discover stacks from changed file paths
 # Any top-level directory containing a docker-compose.yml is a stack
 STACKS=""
-for file in $CHANGED; do
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
   dir=$(echo "$file" | cut -d/ -f1)
   if [ -f "$REPO_DIR/$dir/docker-compose.yml" ] 2>/dev/null; then
     STACKS="$STACKS $dir"
@@ -80,35 +81,38 @@ for file in $CHANGED; do
   if [ "$file" = "docker-compose.yml" ]; then
     STACKS="$STACKS root"
   fi
-done
+done <<< "$CHANGED"
 
 # Deduplicate
 STACKS=$(echo "$STACKS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
 
 # ── Log Changed Files ─────────────────────────────────
 info "Changed files:"
-for file in $CHANGED; do
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
   log "  $file"
-done
+done <<< "$CHANGED"
 sep
 
 # Detect config changes that support hot-reload
 PROMETHEUS_RELOAD=false
 ALERTMANAGER_RELOAD=false
 CONFIG_CHANGES=false
-for file in $CHANGED; do
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
   case "$file" in
     monitoring/prometheus.yml|monitoring/alert-rules.yml) PROMETHEUS_RELOAD=true ;;
     monitoring/alertmanager.yml) ALERTMANAGER_RELOAD=true ;;
     configs/*) CONFIG_CHANGES=true ;;
     */*.sh) SCRIPT_CHANGES="$SCRIPT_CHANGES ${file##*/}" ;;
   esac
-done
+done <<< "$CHANGED"
 
 # ── Log Config Diffs ──────────────────────────────────
 if [ "$CONFIG_CHANGES" = true ]; then
   info "Config file changes:"
-  for file in $CHANGED; do
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
     case "$file" in
       configs/data/*/*.json)
         log "  📋 $file"
@@ -119,11 +123,11 @@ if [ "$CONFIG_CHANGES" = true ]; then
       configs/sync/*.py|configs/sync/modules/*.py)
         log "  📝 $file (sync engine updated)"
         ;;
-      configs/Dockerfile|configs/requirements.txt)
+      configs/Dockerfile)
         log "  🐳 $file (container build changed)"
         ;;
     esac
-  done
+  done <<< "$CHANGED"
   sep
 fi
 
@@ -169,14 +173,26 @@ deploy_stack() {
     docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -5 | while read -r line; do log "$line"; done
     log "Starting $stack..."
     docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
-  elif [ "$stack" = "media" ]; then
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
   else
     docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
   fi
 
-  # Snapshot after (include exited one-shot containers)
-  sleep 2
+  # Wait for containers to settle past "health: starting" state
+  # Most healthchecks have start_period=30s + interval=60s, so 90s covers the first check
+  log "Waiting for health checks to settle..."
+  local health_wait=0
+  while [ $health_wait -lt 90 ]; do
+    sleep 10
+    health_wait=$((health_wait + 10))
+    local current_state
+    current_state=$(snapshot_containers "$stack")
+    # If no containers are in "starting" state, we're done waiting
+    if ! echo "$current_state" | grep -qi 'starting'; then
+      break
+    fi
+    [ $((health_wait % 30)) -eq 0 ] && log "Still waiting for health checks... (${health_wait}s)"
+  done
+
   local after_state
   after_state=$(snapshot_containers "$stack")
   if [ -n "$after_state" ]; then
@@ -202,12 +218,21 @@ deploy_stack() {
     fi
   done
 
-  # Quick health check — any containers not running/healthy?
+  # Health check — look for actually unhealthy containers (not just "starting")
   local unhealthy
-  unhealthy=$(echo "$after_state" | grep -ivE '(running|healthy|Up)' || true)
+  unhealthy=$(echo "$after_state" | grep -i 'unhealthy' || true)
   if [ -n "$unhealthy" ]; then
     warn "Unhealthy containers detected in $stack:"
     echo "$unhealthy" | while read -r line; do warn "  $line"; done
+    return 1
+  fi
+
+  # Catch containers that exited unexpectedly
+  local exited
+  exited=$(echo "$after_state" | grep -ivE '(running|healthy|Up|starting)' || true)
+  if [ -n "$exited" ]; then
+    warn "Non-running containers detected in $stack:"
+    echo "$exited" | while read -r line; do warn "  $line"; done
     return 1
   fi
 
@@ -253,7 +278,6 @@ rollback_stack() {
 }
 
 # ── Deploy Each Stack ─────────────────────────────────
-set +e
 for stack in $STACKS; do
   if deploy_stack "$stack"; then
     SUCCEEDED="$SUCCEEDED $stack"
@@ -264,7 +288,6 @@ for stack in $STACKS; do
   fi
   sep
 done
-set -e
 
 # ── Config Reloads (hot-reload without restart) ───────
 if [ "$PROMETHEUS_RELOAD" = true ]; then
@@ -291,12 +314,22 @@ fi
 # Config-sync is idempotent — it compares local JSON against live APIs and only
 # pushes the delta (including deletes). Running every deploy ensures configs are
 # applied regardless of how the commit arrived (remote push, local push, etc.).
+#
+# If any stack was rolled back, use the previous commit's config data so the
+# API state matches the rolled-back containers (not HEAD's potentially broken config).
 CONFIG_SYNC_OK=false
+CONFIG_SYNC_ROLLED_BACK=false
 if [ -f "$REPO_DIR/media/docker-compose.yml" ] && [ -d "$REPO_DIR/configs/data" ]; then
   info "Running config-sync..."
 
+  if [ -n "$ROLLED_BACK" ]; then
+    warn "Stacks were rolled back — using config data from ${BEFORE:0:7}"
+    git checkout "$BEFORE" -- configs/data/ 2>/dev/null || true
+    CONFIG_SYNC_ROLLED_BACK=true
+  fi
+
   # Rebuild image if sync engine code changed
-  if echo "$CHANGED" | grep -q '^configs/sync/\|^configs/Dockerfile\|^configs/requirements.txt'; then
+  if echo "$CHANGED" | grep -q '^configs/sync/\|^configs/Dockerfile'; then
     log "Building config-sync image..."
     docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/media/docker-compose.yml" build config-sync 2>&1 | tail -5 | while read -r line; do log "$line"; done
   fi
@@ -323,6 +356,11 @@ if [ -f "$REPO_DIR/media/docker-compose.yml" ] && [ -d "$REPO_DIR/configs/data" 
   else
     warn "config-sync exited with code $exit_code"
     docker logs config-sync --tail 20 2>&1 | while read -r line; do log "  $line"; done
+  fi
+
+  # Restore HEAD's config data if we rolled back for sync
+  if [ "$CONFIG_SYNC_ROLLED_BACK" = true ]; then
+    git checkout "$AFTER" -- configs/data/ 2>/dev/null || true
   fi
   sep
 fi

@@ -9,9 +9,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: false  # Template only — remove this line after configuring secrets
     steps:
       - name: Connect to Tailscale
@@ -29,7 +34,9 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          ssh -o StrictHostKeyChecking=no \
-              -o RequestTTY=no \
+          # Tailscale IPs are trusted — pre-scan the host key instead of disabling verification
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -o RequestTTY=no \
               -i ~/.ssh/deploy_key \
               deploy@${{ secrets.DEPLOY_HOST }} 2>&1

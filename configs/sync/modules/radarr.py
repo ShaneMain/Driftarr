@@ -4,6 +4,8 @@ Handles: custom formats, profile scores, quality definitions,
 naming, media management, root folders, download client categories.
 """
 
+import copy
+
 from configs.sync.base import AppModule
 
 
@@ -54,9 +56,10 @@ class RadarrModule(AppModule):
         profiles = self.api_get("qualityprofile")
         exported = {}
         for p in profiles:
-            entry = {"minFormatScore": p.get("minFormatScore", 0)}
-            if p.get("cutoffFormatScore", 0) != 0:
-                entry["cutoffFormatScore"] = p["cutoffFormatScore"]
+            entry = {
+                "minFormatScore": p.get("minFormatScore", 0),
+                "cutoffFormatScore": p.get("cutoffFormatScore", 0),
+            }
             entry["formatScores"] = {
                 fi["name"]: fi["score"]
                 for fi in p.get("formatItems", [])
@@ -171,7 +174,6 @@ class RadarrModule(AppModule):
 
     def _clone_profile_template(self, profiles):
         """Deep-clone the first existing profile as a template for new profiles."""
-        import copy
         if not profiles:
             return None
         template = copy.deepcopy(profiles[0])
@@ -194,7 +196,6 @@ class RadarrModule(AppModule):
         for pname, pconfig in desired.items():
             if pname not in profiles_by_name:
                 # Create missing profile by cloning an existing one as template
-                import copy
                 template = self._clone_profile_template(profiles)
                 if template is None:
                     self.log(f"WARNING: profile '{pname}' not found and no existing profiles to use as template — skipping")

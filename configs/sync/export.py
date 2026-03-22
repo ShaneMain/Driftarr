@@ -39,6 +39,14 @@ def read_env_keys():
             if "=" not in line or line.startswith("#"):
                 continue
             key, _, value = line.partition("=")
+            # Strip surrounding quotes and inline comments
+            value = value.strip()
+            if (value.startswith('"') and value.endswith('"')) or \
+               (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            elif "#" in value:
+                # Only strip inline comments outside of quoted values
+                value = value[:value.index("#")].rstrip()
             if key.endswith("_API_KEY") and not os.environ.get(key):
                 os.environ[key] = value
 

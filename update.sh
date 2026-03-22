@@ -54,35 +54,24 @@ CORE_PATTERNS=(
   "LICENSE"
   "README.md"
   ".github/*"
-  ".github/**"
   "configs/sync/*"
-  "configs/sync/**"
   "configs/Dockerfile"
   "configs/run-export.sh"
   "configs/__init__.py"
   "docs/*"
-  "docs/**"
 )
 
 # ── Check if a file is "core" (upstream wins) ─────────
 is_core_file() {
   local file="$1"
   for pattern in "${CORE_PATTERNS[@]}"; do
-    case "$file" in
-      $pattern) return 0 ;;
-    esac
-  done
-  # Also match nested paths for glob patterns
-  for pattern in "${CORE_PATTERNS[@]}"; do
-    # Convert glob to a simple prefix check for ** patterns
-    local prefix="${pattern%%/\*\*}"
-    if [ "$prefix" != "$pattern" ] && [[ "$file" == "$prefix/"* ]]; then
+    # dir/* or dir/** → match anything under that directory (any depth)
+    local prefix="${pattern%%/\**}"
+    if [[ "$prefix" != "$pattern" && "$file" == "$prefix/"* ]]; then
       return 0
     fi
-    local prefix2="${pattern%%/\*}"
-    if [ "$prefix2" != "$pattern" ] && [[ "$file" == "$prefix2/"* ]] && [[ "$file" != *"/"*"/"* || "$prefix2" == *"/"* ]]; then
-      return 0
-    fi
+    # Exact match for non-glob patterns (e.g. "deploy.sh", "LICENSE")
+    [[ "$file" == "$pattern" ]] && return 0
   done
   return 1
 }
