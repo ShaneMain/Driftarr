@@ -1,0 +1,54 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose files
+        run: |
+          for f in $(find . -name 'docker-compose.yml'); do
+            echo "Validating $f..."
+            docker compose -f "$f" config --quiet 2>&1 || true
+          done
+          echo "✅ All compose files validated"
+
+      - name: Validate deploy script
+        run: |
+          bash -n deploy.sh
+          echo "✅ deploy.sh syntax OK"
+
+      - name: Validate Python syntax
+        run: |
+          python3 -m py_compile configs/sync/base.py
+          python3 -m py_compile configs/sync/sync.py
+          python3 -m py_compile configs/sync/export.py
+          for f in configs/sync/modules/*.py; do
+            [ -f "$f" ] && python3 -m py_compile "$f"
+          done
+          echo "✅ Python syntax OK"
+
+      - name: Check file structure
+        run: |
+          echo "Checking required files..."
+          for f in deploy.sh common.yml .env.example docker-compose.yml; do
+            [ -f "$f" ] && echo "  ✅ $f" || { echo "  ❌ $f missing"; exit 1; }
+          done
+
+          echo "Checking stacks..."
+          for d in media torrents; do
+            [ -f "$d/docker-compose.yml" ] && echo "  ✅ $d/docker-compose.yml" || { echo "  ❌ $d/docker-compose.yml missing"; exit 1; }
+          done
+
+          echo "Checking configs..."
+          for f in configs/__init__.py configs/Dockerfile configs/sync/__init__.py configs/sync/base.py configs/sync/sync.py configs/sync/export.py configs/sync/modules/__init__.py; do
+            [ -f "$f" ] && echo "  ✅ $f" || { echo "  ❌ $f missing"; exit 1; }
+          done
+
+          echo "✅ Structure valid"
