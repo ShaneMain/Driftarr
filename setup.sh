@@ -10,8 +10,7 @@ set -euo pipefail
 #   ./setup.sh uninstall  # Skip the menu, go straight to uninstall
 #
 # Quick start (on a fresh server):
-#   curl -fsSL https://raw.githubusercontent.com/ShaneMain/driftarr/main/setup.sh -o setup.sh
-#   chmod +x setup.sh && ./setup.sh
+#   bash <(curl -fsSL https://raw.githubusercontent.com/ShaneMain/Driftarr/main/setup.sh)
 
 BOLD='\033[1m'
 DIM='\033[2m'
@@ -484,7 +483,7 @@ do_install() {
   else
     echo ""
     info "First, create your own repo from the template on GitHub:"
-    echo -e "    ${CYAN}https://github.com/ShaneMain/driftarr${NC}"
+    echo -e "    ${CYAN}https://github.com/ShaneMain/Driftarr${NC}"
     echo -e "    Click ${BOLD}\"Use this template\" → \"Create a new repository\"${NC}"
     echo -e "    ${BOLD}Make it private${NC} — your Docker configs and server paths don't belong in a public repo."
     wait_for_user
@@ -582,7 +581,7 @@ SSHEOF
     done
 
     echo ""
-    info "VPN (for Gluetun — torrents stack)"
+    info "VPN (for Gluetun — downloads stack)"
     echo -e "  ${DIM}https://github.com/qdm12/gluetun-wiki for provider setup${NC}"
     prompt ENV_VPN_PROVIDER "VPN provider" "mullvad"
     prompt ENV_VPN_TYPE "VPN type" "wireguard"
@@ -811,20 +810,20 @@ SSHDEOF
     VPN_ADDR=$(grep '^WIREGUARD_ADDRESSES=' "$REPO_DIR/.env" 2>/dev/null | cut -d= -f2-)
     if [ -z "$VPN_KEY" ] || [ -z "$VPN_ADDR" ]; then
       warn "Gluetun VPN config is incomplete in .env"
-      echo -e "  ${DIM}WIREGUARD_PRIVATE_KEY and WIREGUARD_ADDRESSES are required for the torrents stack.${NC}"
+      echo -e "  ${DIM}WIREGUARD_PRIVATE_KEY and WIREGUARD_ADDRESSES are required for the downloads stack.${NC}"
       echo -e "  ${DIM}Without them, Gluetun will fail to start and take qBittorrent + Prowlarr with it.${NC}"
       echo ""
-      if confirm "Skip the torrents stack and start everything else?"; then
-        SKIP_TORRENTS=true
+      if confirm "Skip the downloads stack and start everything else?"; then
+        SKIP_DOWNLOADS=true
       else
         info "Fill in the VPN values in $REPO_DIR/.env and re-run: ./setup.sh install"
-        SKIP_TORRENTS=true
+        SKIP_DOWNLOADS=true
       fi
     else
-      SKIP_TORRENTS=false
+      SKIP_DOWNLOADS=false
     fi
   else
-    SKIP_TORRENTS=false
+    SKIP_DOWNLOADS=false
   fi
 
   echo -e "  ${DIM}This starts all your Docker stacks for the first time.${NC}"
@@ -833,13 +832,13 @@ SSHDEOF
 
   if confirm "Start all stacks now?"; then
     info "Starting..."
-    if [ "$SKIP_TORRENTS" = true ]; then
-      # Start stacks individually, skipping torrents
+    if [ "$SKIP_DOWNLOADS" = true ]; then
+      # Start stacks individually, skipping downloads
       for dir in "$REPO_DIR"/*/; do
         if [ -f "$dir/docker-compose.yml" ]; then
           stack_name=$(basename "$dir")
-          if [ "$stack_name" = "torrents" ]; then
-            warn "Skipping torrents stack (VPN not configured)"
+          if [ "$stack_name" = "downloads" ]; then
+            warn "Skipping downloads stack (VPN not configured)"
             continue
           fi
           info "Starting $stack_name..."

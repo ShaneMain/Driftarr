@@ -2,5 +2,5 @@
 # Add or remove stacks as needed
 include:
   - media/docker-compose.yml
-  - torrents/docker-compose.yml
+  - downloads/docker-compose.yml
   # - monitoring/docker-compose.yml

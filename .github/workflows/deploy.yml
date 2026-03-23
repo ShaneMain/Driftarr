@@ -31,12 +31,13 @@ jobs:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
 
           # Tailscale IPs are trusted — pre-scan the host key instead of disabling verification
           ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
+          # Load the key into the agent so it's never written to disk
+          eval "$(ssh-agent -s)"
+          echo "$SSH_KEY" | ssh-add -
+
           ssh -o RequestTTY=no \
-              -i ~/.ssh/deploy_key \
               deploy@${{ secrets.DEPLOY_HOST }} 2>&1

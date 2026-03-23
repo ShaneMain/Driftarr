@@ -43,6 +43,10 @@ AFTER=$(git rev-parse HEAD)
 # If the pull was a no-op (e.g. commit pushed from this server), fall back to
 # diffing HEAD~1..HEAD so the deploy still runs for the latest commit.
 if [ "$BEFORE" = "$AFTER" ]; then
+  if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+    info "Already up to date and only one commit exists — nothing to deploy."
+    exit 0
+  fi
   BEFORE=$(git rev-parse HEAD~1)
   info "Already up to date — using HEAD~1..HEAD (${BEFORE:0:7}..${AFTER:0:7})"
 fi
@@ -193,13 +197,6 @@ deploy_stack() {
     [ $((health_wait % 30)) -eq 0 ] && log "Still waiting for health checks... (${health_wait}s)"
   done
 
-  local after_state
-  after_state=$(snapshot_containers "$stack")
-  if [ -n "$after_state" ]; then
-    log "After:"
-    echo "$after_state" | while read -r line; do log "  $line"; done
-  fi
-
   # Wait for one-shot containers to finish (config-sync etc.)
   local oneshot_running=true wait_count=0
   while [ "$oneshot_running" = true ] && [ $wait_count -lt 120 ]; do
@@ -218,6 +215,14 @@ deploy_stack() {
     fi
   done
 
+  # Snapshot after one-shots have finished so their clean exits don't skew the health check
+  local after_state
+  after_state=$(snapshot_containers "$stack")
+  if [ -n "$after_state" ]; then
+    log "After:"
+    echo "$after_state" | while read -r line; do log "  $line"; done
+  fi
+
   # Health check — look for actually unhealthy containers (not just "starting")
   local unhealthy
   unhealthy=$(echo "$after_state" | grep -i 'unhealthy' || true)
@@ -227,9 +232,9 @@ deploy_stack() {
     return 1
   fi
 
-  # Catch containers that exited unexpectedly
+  # Catch containers that exited unexpectedly (Exited (0) = successful one-shot, not a failure)
   local exited
-  exited=$(echo "$after_state" | grep -ivE '(running|healthy|Up|starting)' || true)
+  exited=$(echo "$after_state" | grep -ivE '(running|healthy|Up|starting|Exited \(0\))' || true)
   if [ -n "$exited" ]; then
     warn "Non-running containers detected in $stack:"
     echo "$exited" | while read -r line; do warn "  $line"; done
@@ -258,6 +263,10 @@ rollback_stack() {
   local stack="$1"
   warn "Rolling back $stack to ${BEFORE:0:7}..."
 
+  # If the script is killed between the two checkouts, restore HEAD so the
+  # working tree doesn't end up stranded at $BEFORE.
+  trap 'git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true; trap - EXIT' EXIT
+
   git checkout "$BEFORE" -- "$stack/" 2>/dev/null || git checkout "$BEFORE" -- "$stack" 2>/dev/null || true
 
   if [ "$stack" = "root" ]; then
@@ -272,6 +281,7 @@ rollback_stack() {
 
   # Restore working tree to HEAD
   git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true
+  trap - EXIT  # restore completed normally; clear the safety trap
 
   ROLLED_BACK="$ROLLED_BACK $stack"
   warn "$stack rolled back to ${BEFORE:0:7}"
@@ -340,12 +350,12 @@ if [ -f "$REPO_DIR/media/docker-compose.yml" ] && [ -d "$REPO_DIR/configs/data" 
   docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/media/docker-compose.yml" up -d config-sync 2>&1 | while read -r line; do log "$line"; done
 
   # Wait for it to finish
-  local_wait=0
-  while [ $local_wait -lt 120 ]; do
+  sync_wait=0
+  while [ $sync_wait -lt 120 ]; do
     running=$(docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/media/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'config-sync' || true)
     if [ "$running" -eq 0 ]; then break; fi
     sleep 5
-    local_wait=$((local_wait + 5))
+    sync_wait=$((sync_wait + 5))
   done
 
   # Check exit code

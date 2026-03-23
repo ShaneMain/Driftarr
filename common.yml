@@ -1,3 +1,8 @@
+# Fleet-wide defaults inherited by every service via `extends`.
+#
+# Healthcheck note: healthcheck commands vary by base image.
+# LinuxServer images (media stack) ship curl; Alpine/Prometheus images ship wget.
+# Each service's healthcheck uses whichever tool is available in its image.
 services:
   default:
     restart: unless-stopped

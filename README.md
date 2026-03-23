@@ -20,7 +20,7 @@ No more SSHing into servers to run `docker compose up -d` by hand.
 
 ## Overview
 
-Driftarr applies DevOps and Infrastructure as Code (IaC) principles to self-hosted Docker Compose environments. It ships with a media server stack (Sonarr, Radarr, Bazarr, Prowlarr, NZBGet) and a VPN-tunneled torrent setup as a working reference implementation, but the pipeline itself is stack-agnostic — any Docker Compose service works.
+Driftarr applies DevOps and Infrastructure as Code (IaC) principles to self-hosted Docker Compose environments. It ships with a media server stack (Sonarr, Radarr, Bazarr, Prowlarr, NZBGet) and a VPN-tunneled download setup as a working reference implementation, but the pipeline itself is stack-agnostic — any Docker Compose service works.
 
 The deploy pipeline, security model, and config sync engine are the core value. The included stacks are just a starting point.
 
@@ -59,7 +59,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/ShaneMain/Driftarr/main/setu
 
 The wizard handles: cloning, `.env` configuration, deploy user creation, SSH key generation, GitHub secrets guidance, workflow activation, config export cron, and initial deployment.
 
-For manual setup, see [docs/server-setup.md](docs/server-setup.md).
+For manual setup, see [docs/server-setup.md](docs/server-setup.md). For common issues, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Architecture
 
@@ -82,7 +82,7 @@ For manual setup, see [docs/server-setup.md](docs/server-setup.md).
                               ┌───────────────┼───────────────┐
                               │               │               │
                         ┌─────▼─────┐   ┌─────▼─────┐   ┌────▼──────┐
-                        │   media   │   │  torrents  │   │ monitoring│
+                        │   media   │   │ downloads │   │ monitoring│
                         │   stack   │   │   stack    │   │   stack   │
                         └───────────┘   └───────────┘   └───────────┘
 ```
@@ -112,7 +112,7 @@ For manual setup, see [docs/server-setup.md](docs/server-setup.md).
 ├── media/                      # Sonarr, Radarr, Bazarr, NZBGet, config-sync
 │   ├── common.yml              # Media defaults (extends root + PUID/PGID)
 │   └── docker-compose.yml
-├── torrents/                   # Gluetun VPN + qBittorrent + Prowlarr
+├── downloads/                   # Gluetun VPN + qBittorrent + Prowlarr
 │   ├── common.yml
 │   └── docker-compose.yml
 ├── monitoring/                 # Optional: Prometheus + Grafana + Node Exporter

@@ -11,7 +11,7 @@ services:
       - /dev/net/tun:/dev/net/tun
     ports:
       - "8080:8080"     # qBittorrent web UI
-      - "6881:6881"     # qBittorrent torrents
+      - "6881:6881"     # qBittorrent
       - "6881:6881/udp"
       - "9696:9696"     # Prowlarr web UI
     environment:

@@ -15,7 +15,7 @@ jobs:
         run: |
           for f in $(find . -name 'docker-compose.yml'); do
             echo "Validating $f..."
-            docker compose -f "$f" config --quiet 2>&1 || true
+            docker compose -f "$f" --env-file .env.example config --quiet
           done
           echo "✅ All compose files validated"
 
@@ -42,7 +42,7 @@ jobs:
           done
 
           echo "Checking stacks..."
-          for d in media torrents; do
+          for d in media downloads; do
             [ -f "$d/docker-compose.yml" ] && echo "  ✅ $d/docker-compose.yml" || { echo "  ❌ $d/docker-compose.yml missing"; exit 1; }
           done
 

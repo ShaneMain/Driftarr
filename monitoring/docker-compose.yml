@@ -31,6 +31,9 @@ services:
       - "3000:3000"
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
+      # WARNING: Anonymous users get full Admin access. Fine for a LAN-only
+      # dashboard with no internet exposure. If you expose Grafana externally,
+      # change this to Viewer and enable the login form.
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
     volumes:
