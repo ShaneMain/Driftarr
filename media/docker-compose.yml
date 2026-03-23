@@ -86,9 +86,4 @@ services:
       - ${DOCKER_DIR}/sonarr:/sonarr-config:ro
     environment:
       SEERR_API_KEY: ${SEERR_API_KEY:-}
-    depends_on:
-      sonarr:
-        condition: service_healthy
-      radarr:
-        condition: service_healthy
     restart: "no"

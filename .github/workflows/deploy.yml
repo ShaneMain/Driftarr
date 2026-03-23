@@ -32,8 +32,27 @@ jobs:
         run: |
           mkdir -p ~/.ssh
 
-          # Tailscale IPs are trusted — pre-scan the host key instead of disabling verification
-          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          # Wait for Tailscale connectivity to the deploy target
+          for i in 1 2 3 4 5; do
+            if tailscale ping --timeout=5s ${{ secrets.DEPLOY_HOST }} >/dev/null 2>&1; then
+              echo "Tailscale connectivity confirmed"
+              break
+            fi
+            echo "Waiting for Tailscale connectivity... (attempt $i)"
+            sleep 3
+          done
+
+          # Pre-scan the host key (retry in case of transient failure)
+          for i in 1 2 3; do
+            if ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null; then
+              if [ -s ~/.ssh/known_hosts ]; then
+                echo "Host key scanned successfully"
+                break
+              fi
+            fi
+            echo "ssh-keyscan attempt $i failed, retrying..."
+            sleep 2
+          done
 
           # Load the key into the agent so it's never written to disk
           eval "$(ssh-agent -s)"
