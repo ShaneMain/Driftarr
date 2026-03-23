@@ -20,6 +20,7 @@ from configs.sync.base import log
 REPO_DIR = pathlib.Path(os.environ.get("REPO_DIR", f"/home/{os.environ.get('USER', 'root')}/docker-stacks"))
 CONFIGS_DIR = REPO_DIR / "configs"
 DATA_DIR = CONFIGS_DIR / "data"
+BRANCH = os.environ.get("DEPLOY_BRANCH", "main")
 DRY_RUN = "--dry-run" in sys.argv
 SYNC_MARKER = pathlib.Path("/tmp/config-sync-ran")
 
@@ -44,9 +45,10 @@ def read_env_keys():
             if (value.startswith('"') and value.endswith('"')) or \
                (value.startswith("'") and value.endswith("'")):
                 value = value[1:-1]
-            elif "#" in value:
-                # Only strip inline comments outside of quoted values
-                value = value[:value.index("#")].rstrip()
+            elif " #" in value:
+                # Only strip inline comments preceded by whitespace (shell convention)
+                # e.g. KEY=value # comment → value, but KEY=abc#123 → abc#123
+                value = value[:value.index(" #")].rstrip()
             if key.endswith("_API_KEY") and not os.environ.get(key):
                 os.environ[key] = value
 
@@ -129,9 +131,9 @@ def git_commit_and_push():
         "chore(configs): auto-export config changes from UI\n\n"
         "Exported by config-export cron. Changes were made via application UIs.")
 
-    result = git("push", "origin", "main")
+    result = git("push", "origin", BRANCH)
     if result.returncode == 0:
-        log("config-export", "pushed to origin/main")
+        log("config-export", f"pushed to origin/{BRANCH}")
     else:
         log("config-export", f"ERROR: git push failed: {result.stderr}")
         sys.exit(1)

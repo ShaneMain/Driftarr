@@ -18,6 +18,9 @@ BRANCH="${DEPLOY_BRANCH:-main}"
 # Space-separated list of stack names (directory names)
 BUILD_STACKS="${DEPLOY_BUILD_STACKS:-}"
 
+# Stack that contains the config-sync service (leave empty to disable config-sync)
+CONFIG_SYNC_STACK="${DEPLOY_CONFIG_SYNC_STACK:-media}"
+
 # Track results for summary
 SUCCEEDED=""
 FAILED=""
@@ -329,7 +332,7 @@ fi
 # API state matches the rolled-back containers (not HEAD's potentially broken config).
 CONFIG_SYNC_OK=false
 CONFIG_SYNC_ROLLED_BACK=false
-if [ -f "$REPO_DIR/media/docker-compose.yml" ] && [ -d "$REPO_DIR/configs/data" ]; then
+if [ -n "$CONFIG_SYNC_STACK" ] && [ -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" ] && [ -d "$REPO_DIR/configs/data" ]; then
   info "Running config-sync..."
 
   if [ -n "$ROLLED_BACK" ]; then
@@ -341,18 +344,18 @@ if [ -f "$REPO_DIR/media/docker-compose.yml" ] && [ -d "$REPO_DIR/configs/data" 
   # Rebuild image if sync engine code changed
   if echo "$CHANGED" | grep -q '^configs/sync/\|^configs/Dockerfile'; then
     log "Building config-sync image..."
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/media/docker-compose.yml" build config-sync 2>&1 | tail -5 | while read -r line; do log "$line"; done
+    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" build config-sync 2>&1 | tail -5 | while read -r line; do log "$line"; done
   fi
 
   # Always force-recreate the one-shot container (data is bind-mounted,
   # so the image hash doesn't change on data-only updates)
   docker rm -f config-sync 2>/dev/null || true
-  docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/media/docker-compose.yml" up -d config-sync 2>&1 | while read -r line; do log "$line"; done
+  docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" up -d config-sync 2>&1 | while read -r line; do log "$line"; done
 
   # Wait for it to finish
   sync_wait=0
   while [ $sync_wait -lt 120 ]; do
-    running=$(docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/media/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'config-sync' || true)
+    running=$(docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'config-sync' || true)
     if [ "$running" -eq 0 ]; then break; fi
     sleep 5
     sync_wait=$((sync_wait + 5))
