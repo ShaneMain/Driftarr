@@ -37,21 +37,39 @@ sep()  { echo "─────────────────────�
 
 cd "$REPO_DIR"
 
-# ── Git Pull ──────────────────────────────────────────
-BEFORE=$(git rev-parse HEAD)
-info "Pulling latest changes..."
-git pull --ff-only origin "$BRANCH"
-AFTER=$(git rev-parse HEAD)
+# ── Re-exec guard ────────────────────────────────────
+# If deploy.sh was updated by git pull, bash is still running the old copy
+# from memory. We re-exec the on-disk version so changes take effect immediately.
+# DEPLOY_REEXEC is set to pass the before/after refs so the re-exec'd script
+# skips the pull and picks up where we left off.
+if [ -n "${DEPLOY_REEXEC:-}" ]; then
+  BEFORE="${DEPLOY_REEXEC_BEFORE}"
+  AFTER="${DEPLOY_REEXEC_AFTER}"
+  info "Re-exec'd with updated deploy.sh (${BEFORE:0:7} → ${AFTER:0:7})"
+else
+  # ── Git Pull ──────────────────────────────────────────
+  BEFORE=$(git rev-parse HEAD)
+  info "Pulling latest changes..."
+  git pull --ff-only origin "$BRANCH"
+  AFTER=$(git rev-parse HEAD)
 
-# If the pull was a no-op (e.g. commit pushed from this server), fall back to
-# diffing HEAD~1..HEAD so the deploy still runs for the latest commit.
-if [ "$BEFORE" = "$AFTER" ]; then
-  if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-    info "Already up to date and only one commit exists — nothing to deploy."
-    exit 0
+  # If the pull was a no-op (e.g. commit pushed from this server), fall back to
+  # diffing HEAD~1..HEAD so the deploy still runs for the latest commit.
+  if [ "$BEFORE" = "$AFTER" ]; then
+    if ! git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+      info "Already up to date and only one commit exists — nothing to deploy."
+      exit 0
+    fi
+    BEFORE=$(git rev-parse HEAD~1)
+    info "Already up to date — using HEAD~1..HEAD (${BEFORE:0:7}..${AFTER:0:7})"
   fi
-  BEFORE=$(git rev-parse HEAD~1)
-  info "Already up to date — using HEAD~1..HEAD (${BEFORE:0:7}..${AFTER:0:7})"
+
+  # If deploy.sh changed, re-exec the updated version
+  if git diff --name-only "$BEFORE" "$AFTER" | grep -qx 'deploy.sh'; then
+    info "deploy.sh updated — re-executing with new version..."
+    export DEPLOY_REEXEC=1 DEPLOY_REEXEC_BEFORE="$BEFORE" DEPLOY_REEXEC_AFTER="$AFTER"
+    exec "$REPO_DIR/deploy.sh"
+  fi
 fi
 
 info "Deploying ${BEFORE:0:7} → ${AFTER:0:7}"
@@ -91,6 +109,39 @@ while IFS= read -r file; do
 done <<< "$CHANGED"
 
 # Deduplicate
+STACKS=$(echo "$STACKS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
+
+# ── Helper: compute file checksum for a stack dir ─────
+# Includes the root common.yml since all stacks extend it
+stack_file_hash() {
+  local stack_dir="$1"
+  {
+    find "$stack_dir" -maxdepth 1 -type f ! -name 'docker-compose.yml' -exec md5sum {} +
+    [ -f "$REPO_DIR/common.yml" ] && md5sum "$REPO_DIR/common.yml"
+  } 2>/dev/null | sort | md5sum | awk '{print $1}'
+}
+
+# ── Drift Detection ──────────────────────────────────
+# Compare file checksums in each stack directory against the last successful
+# deploy. This catches bind-mount drift (git replaces files atomically with
+# new inodes) even when the compose definition hasn't changed.
+DEPLOY_HASHES_DIR="$REPO_DIR/.deploy-hashes"
+mkdir -p "$DEPLOY_HASHES_DIR"
+DRIFT_STACKS=""
+for d in "$REPO_DIR"/*/; do
+  [ -f "$d/docker-compose.yml" ] || continue
+  stack=$(basename "$d")
+  repo_hash=$(stack_file_hash "$d")
+  stored_hash=$(cat "$DEPLOY_HASHES_DIR/$stack" 2>/dev/null || echo "")
+  if [ "$repo_hash" != "$stored_hash" ]; then
+    # Only log drift for stacks not already in the deploy list
+    if ! echo " $STACKS " | grep -q " $stack "; then
+      log "Drift detected in $stack (file checksums changed since last deploy)"
+      DRIFT_STACKS="$DRIFT_STACKS $stack"
+    fi
+  fi
+done
+STACKS="$STACKS $DRIFT_STACKS"
 STACKS=$(echo "$STACKS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
 
 # ── Log Changed Files ─────────────────────────────────
@@ -149,7 +200,7 @@ snapshot_containers() {
   if [ "$stack_dir" = "root" ]; then
     docker compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true
   else
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack_dir/docker-compose.yml" ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true
+    docker compose -p "$stack_dir" -f "$REPO_DIR/$stack_dir/docker-compose.yml" ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true
   fi
 }
 
@@ -174,14 +225,14 @@ deploy_stack() {
 
   if [ "$stack" = "root" ]; then
     log "Root compose changed — recreating all"
-    docker compose up -d 2>&1 | while read -r line; do log "$line"; done
+    docker compose up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
   elif needs_build "$stack"; then
     log "Building $stack images..."
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -5 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -5 | while read -r line; do log "$line"; done
     log "Starting $stack..."
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
   else
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
   fi
 
   # Wait for containers to settle past "health: starting" state
@@ -207,7 +258,7 @@ deploy_stack() {
     if [ "$stack" = "root" ]; then
       exited_check=$(docker compose ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'sync\|oneshot\|migrate' || true)
     else
-      exited_check=$(docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'sync\|oneshot\|migrate' || true)
+      exited_check=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'sync\|oneshot\|migrate' || true)
     fi
     if [ "$exited_check" -gt 0 ]; then
       [ $wait_count -eq 0 ] && log "Waiting for one-shot containers to finish..."
@@ -249,7 +300,7 @@ deploy_stack() {
   if [ "$stack" = "root" ]; then
     failed_oneshots=$(docker compose ps -a --format '{{.Name}} {{.ExitCode}}' 2>/dev/null | awk '$2 != 0 && $2 != ""' || true)
   else
-    failed_oneshots=$(docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --format '{{.Name}} {{.ExitCode}}' 2>/dev/null | awk '$2 != 0 && $2 != ""' || true)
+    failed_oneshots=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --format '{{.Name}} {{.ExitCode}}' 2>/dev/null | awk '$2 != 0 && $2 != ""' || true)
   fi
   if [ -n "$failed_oneshots" ]; then
     warn "Failed one-shot containers in $stack:"
@@ -258,6 +309,10 @@ deploy_stack() {
   fi
 
   ok "$stack deployed successfully"
+
+  # Store file checksum so future deploys can detect drift
+  stack_file_hash "$REPO_DIR/$stack" > "$DEPLOY_HASHES_DIR/$stack"
+
   return 0
 }
 
@@ -274,12 +329,12 @@ rollback_stack() {
 
   if [ "$stack" = "root" ]; then
     git checkout "$BEFORE" -- docker-compose.yml 2>/dev/null || true
-    docker compose up -d 2>&1 | while read -r line; do log "$line"; done
+    docker compose up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
   elif needs_build "$stack"; then
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -3 | while read -r line; do log "$line"; done
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -3 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
   else
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
   fi
 
   # Restore working tree to HEAD
@@ -344,18 +399,18 @@ if [ -n "$CONFIG_SYNC_STACK" ] && [ -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-comp
   # Rebuild image if sync engine code changed
   if echo "$CHANGED" | grep -q '^configs/sync/\|^configs/Dockerfile'; then
     log "Building config-sync image..."
-    docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" build config-sync 2>&1 | tail -5 | while read -r line; do log "$line"; done
+    docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" build config-sync 2>&1 | tail -5 | while read -r line; do log "$line"; done
   fi
 
   # Always force-recreate the one-shot container (data is bind-mounted,
   # so the image hash doesn't change on data-only updates)
   docker rm -f config-sync 2>/dev/null || true
-  docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" up -d config-sync 2>&1 | while read -r line; do log "$line"; done
+  docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" up -d config-sync 2>&1 | while read -r line; do log "$line"; done
 
   # Wait for it to finish
   sync_wait=0
   while [ $sync_wait -lt 120 ]; do
-    running=$(docker compose -p "$(basename "$REPO_DIR")" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'config-sync' || true)
+    running=$(docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'config-sync' || true)
     if [ "$running" -eq 0 ]; then break; fi
     sleep 5
     sync_wait=$((sync_wait + 5))
