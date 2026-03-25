@@ -3,7 +3,7 @@
 # No external dependencies — uses Python stdlib only (urllib).
 #
 # Crontab entry:
-#   0 * * * * /home/$USER/docker-stacks/configs/run-export.sh >> /var/log/config-export.log 2>&1
+#   0 * * * * /home/$USER/docker-stacks/configs/run-export.sh >> /home/$USER/config-export.log 2>&1
 
 REPO_DIR="${REPO_DIR:-/home/$USER/docker-stacks}"
 export PYTHONPATH="$REPO_DIR"

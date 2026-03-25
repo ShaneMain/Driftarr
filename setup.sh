@@ -777,7 +777,7 @@ SSHDEOF
   echo -e "  ${DIM}start working once the services are up.${NC}"
   echo ""
 
-  CRON_LINE="0 * * * * ${REPO_DIR}/configs/run-export.sh >> /var/log/config-export.log 2>&1"
+  CRON_LINE="0 * * * * ${REPO_DIR}/configs/run-export.sh >> \$HOME/config-export.log 2>&1"
 
   if crontab -l 2>/dev/null | grep -qF "run-export.sh"; then
     ok "Config export cron already installed"

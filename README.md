@@ -328,7 +328,7 @@ Drop a Python file in `configs/sync/modules/` — it's auto-discovered. See the 
 
 ```bash
 # Add to crontab — runs every hour, captures UI changes back into git
-0 * * * * /path/to/docker-stacks/configs/run-export.sh >> /var/log/config-export.log 2>&1
+0 * * * * /path/to/docker-stacks/configs/run-export.sh >> $HOME/config-export.log 2>&1
 ```
 
 The first run bootstraps `configs/data/` by pulling live configs from your services — this becomes your baseline. No sample configs ship with the template because every setup is different. From there, any changes you make in the UI get captured back into git automatically.

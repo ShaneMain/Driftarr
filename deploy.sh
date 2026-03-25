@@ -378,6 +378,27 @@ if [ "$ALERTMANAGER_RELOAD" = true ]; then
   fi
 fi
 
+# ── Crontab Sync (always run) ─────────────────────────
+# Install the declarative crontab as the user's crontab. Idempotent — only
+# updates if the file has changed. All scheduled jobs (monitoring, maintenance,
+# management, config export) are defined in the repo's `crontab` file.
+CRONTAB_FILE="$REPO_DIR/crontab"
+CRONTAB_OK=false
+if [ -f "$CRONTAB_FILE" ]; then
+  CURRENT_CRONTAB=$(crontab -l 2>/dev/null || true)
+  NEW_CRONTAB=$(cat "$CRONTAB_FILE")
+  if [ "$CURRENT_CRONTAB" != "$NEW_CRONTAB" ]; then
+    info "Installing updated crontab..."
+    crontab "$CRONTAB_FILE"
+    ok "Crontab updated"
+    CRONTAB_OK=true
+  else
+    log "Crontab unchanged — skipping"
+    CRONTAB_OK=true
+  fi
+fi
+sep
+
 # ── Config Sync (always run) ──────────────────────────
 # Config-sync is idempotent — it compares local JSON against live APIs and only
 # pushes the delta (including deletes). Running every deploy ensures configs are
@@ -445,6 +466,9 @@ if [ -n "$CONFIG_RELOADS" ]; then
 fi
 if [ -n "$SCRIPT_CHANGES" ]; then
   log "📝 Scripts updated (no restart needed):$SCRIPT_CHANGES"
+fi
+if [ "$CRONTAB_OK" = true ]; then
+  ok "Crontab: synced"
 fi
 if [ "$CONFIG_SYNC_OK" = true ]; then
   ok "Config sync: applied"

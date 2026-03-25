@@ -165,7 +165,7 @@ crontab -e
 ```
 
 ```
-0 * * * * /path/to/docker-stacks/configs/run-export.sh >> /var/log/config-export.log 2>&1
+0 * * * * /path/to/docker-stacks/configs/run-export.sh >> $HOME/config-export.log 2>&1
 ```
 
 The first run bootstraps `configs/data/` by pulling live configs from service APIs. The cron user needs git push access (SSH key) and the services running with API keys in `.env`.
