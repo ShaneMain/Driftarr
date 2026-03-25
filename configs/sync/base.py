@@ -130,6 +130,21 @@ class AppModule:
 
     # ── JSON I/O ──────────────────────────────────────
 
+    def is_bootstrap_mode(self) -> bool:
+        """Check if this is first run (no config files exported yet).
+
+        Returns True if:
+        - The data directory doesn't exist, or
+        - The data directory has no JSON files (only .gitkeep, etc.)
+
+        This prevents accidental deletion on initial deploy before export runs.
+        """
+        if not self.data_dir.exists():
+            return True
+        # Check if directory is empty or only has non-JSON files
+        json_files = list(self.data_dir.glob("*.json"))
+        return len(json_files) == 0
+
     def load_json(self, filename: str) -> Any | None:
         path = self.data_dir / filename
         if not path.exists():

@@ -134,6 +134,9 @@ class RadarrModule(AppModule):
     def _sync_custom_formats(self):
         desired = self.load_json("custom-formats.json")
         if desired is None:
+            if self.is_bootstrap_mode():
+                self.log("BOOTSTRAP: no configs exported yet — skipping sync (run export first)")
+                return
             desired = []  # Missing file = delete all from API
 
         remote_cfs = self.api_get("customformat")
@@ -188,6 +191,9 @@ class RadarrModule(AppModule):
     def _sync_profile_scores(self):
         desired = self.load_json("profile-scores.json")
         if desired is None:
+            if self.is_bootstrap_mode():
+                self.log("BOOTSTRAP: no configs exported yet — skipping sync (run export first)")
+                return
             desired = {}  # Missing file = reset all scores / delete extra profiles
 
         profiles = self.api_get("qualityprofile")
@@ -318,6 +324,9 @@ class RadarrModule(AppModule):
     def _sync_root_folders(self):
         desired = self.load_json("root-folders.json")
         if desired is None:
+            if self.is_bootstrap_mode():
+                self.log("BOOTSTRAP: no configs exported yet — skipping sync (run export first)")
+                return
             desired = []  # Missing file = delete all from API
 
         remote_rfs = self.api_get("rootfolder")
