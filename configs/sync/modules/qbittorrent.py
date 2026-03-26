@@ -54,7 +54,8 @@ class QbittorrentModule(AppModule):
     name = "qbittorrent"
     url_env = "QBITTORRENT_URL"
     key_env = ""  # No API key — auth bypassed via subnet whitelist
-    default_url = "http://172.20.0.10:8080"
+    default_url = "http://qbittorrent:8080"
+    expected_files = ["preferences.json"]
 
     # ── API helpers (v2, no auth) ─────────────────────
 

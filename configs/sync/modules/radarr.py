@@ -15,6 +15,14 @@ class RadarrModule(AppModule):
     key_env = "RADARR_API_KEY"
     default_url = "http://radarr:7878"
     config_xml_path = "/radarr-config/config.xml"
+    expected_files = [
+        "custom-formats.json",
+        "profile-scores.json",
+        "quality-definitions.json",
+        "naming.json",
+        "media-management.json",
+        "root-folders.json"
+    ]
 
     # Download client post-import category field + value
     import_category_field = "movieImportedCategory"

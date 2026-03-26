@@ -26,6 +26,7 @@ class AppModule:
     key_env: str = ""        # env var for API key, e.g. "RADARR_API_KEY"
     default_url: str = ""    # fallback URL if env var not set
     config_xml_path: str = ""  # optional: path to config.xml for API key
+    expected_files: list[str] = []  # files that should exist after export (for bootstrap detection)
 
     def __init__(self, data_dir: pathlib.Path, mode: str = "sync"):
         self.data_dir = data_dir / self.name
@@ -135,15 +136,27 @@ class AppModule:
 
         Returns True if:
         - The data directory doesn't exist, or
-        - The data directory has no JSON files (only .gitkeep, etc.)
+        - The data directory has no JSON files (only .gitkeep, etc.), or
+        - Expected files (if defined) don't all exist
 
         This prevents accidental deletion on initial deploy before export runs.
         """
         if not self.data_dir.exists():
             return True
+
         # Check if directory is empty or only has non-JSON files
         json_files = list(self.data_dir.glob("*.json"))
-        return len(json_files) == 0
+        if len(json_files) == 0:
+            return True
+
+        # If expected_files is defined, check that all expected files exist
+        if self.expected_files:
+            for expected in self.expected_files:
+                if not (self.data_dir / expected).exists():
+                    self.log(f"bootstrap mode: missing expected file '{expected}'")
+                    return True
+
+        return False
 
     def load_json(self, filename: str) -> Any | None:
         path = self.data_dir / filename

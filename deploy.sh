@@ -37,6 +37,64 @@ sep()  { echo "─────────────────────�
 
 cd "$REPO_DIR"
 
+# ── Environment Validation ────────────────────────────
+# Load .env and validate required variables
+if [ -f "$REPO_DIR/.env" ]; then
+  set -a
+  source "$REPO_DIR/.env"
+  set +a
+fi
+
+validate_env() {
+  local missing=""
+  local invalid_paths=""
+
+  # Check required directory variables (only those that are commonly required)
+  for var in DOCKER_DIR MEDIA_DIR; do
+    val="${!var:-}"
+    if [ -z "$val" ]; then
+      missing="$missing $var"
+    elif [[ "$val" =~ ^/ ]]; then
+      # Valid absolute path
+      :
+    else
+      invalid_paths="$invalid_paths $var='$val'"
+    fi
+  done
+
+  # Check DOWNLOADS_DIR if downloads stack exists (warn only, don't fail)
+  if [ -d "$REPO_DIR/downloads" ]; then
+    val="${DOWNLOADS_DIR:-}"
+    if [ -z "$val" ]; then
+      warn "DOWNLOADS_DIR not set (downloads stack may fail if used)"
+    elif ! [[ "$val" =~ ^/ ]]; then
+      invalid_paths="$invalid_paths DOWNLOADS_DIR='$val'"
+    fi
+
+    # Check VPN config for downloads stack
+    for var in VPN_SERVICE_PROVIDER VPN_TYPE WIREGUARD_PRIVATE_KEY WIREGUARD_ADDRESSES; do
+      val="${!var:-}"
+      if [ -z "$val" ]; then
+        warn "VPN config incomplete: $var not set (downloads stack may fail)"
+      fi
+    done
+  fi
+
+  # Report errors
+  if [ -n "$missing" ]; then
+    err "Required environment variables not set:$missing"
+    err "Create .env file with required values (see .env.example)"
+    exit 1
+  fi
+
+  if [ -n "$invalid_paths" ]; then
+    err "Invalid paths (must be absolute):$invalid_paths"
+    exit 1
+  fi
+}
+
+validate_env
+
 # ── Re-exec guard ────────────────────────────────────
 # If deploy.sh was updated by git pull, bash is still running the old copy
 # from memory. We re-exec the on-disk version so changes take effect immediately.
@@ -224,15 +282,15 @@ deploy_stack() {
   fi
 
   if [ "$stack" = "root" ]; then
-    log "Root compose changed — recreating all"
-    docker compose up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
+    log "Root compose changed — updating all services"
+    docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   elif needs_build "$stack"; then
     log "Building $stack images..."
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -5 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
     log "Starting $stack..."
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   else
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
 
   # Wait for containers to settle past "health: starting" state
@@ -329,12 +387,12 @@ rollback_stack() {
 
   if [ "$stack" = "root" ]; then
     git checkout "$BEFORE" -- docker-compose.yml 2>/dev/null || true
-    docker compose up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
+    docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   elif needs_build "$stack"; then
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tail -3 | while read -r line; do log "$line"; done
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   else
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d --force-recreate 2>&1 | while read -r line; do log "$line"; done
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
 
   # Restore working tree to HEAD
@@ -420,13 +478,13 @@ if [ -n "$CONFIG_SYNC_STACK" ] && [ -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-comp
   # Rebuild image if sync engine code changed
   if echo "$CHANGED" | grep -q '^configs/sync/\|^configs/Dockerfile'; then
     log "Building config-sync image..."
-    docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" build config-sync 2>&1 | tail -5 | while read -r line; do log "$line"; done
+    docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" build config-sync 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
   fi
 
   # Always force-recreate the one-shot container (data is bind-mounted,
   # so the image hash doesn't change on data-only updates)
   docker rm -f config-sync 2>/dev/null || true
-  docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" up -d config-sync 2>&1 | while read -r line; do log "$line"; done
+  docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" up -d config-sync 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
 
   # Wait for it to finish
   sync_wait=0
