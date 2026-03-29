@@ -19,10 +19,13 @@ jobs:
           done
           echo "✅ All compose files validated"
 
-      - name: Validate deploy script
+      - name: Validate deploy scripts
         run: |
           bash -n deploy.sh
-          echo "✅ deploy.sh syntax OK"
+          for f in deploy/*.sh; do
+            [ -f "$f" ] && bash -n "$f" && echo "  ✅ $f"
+          done
+          echo "✅ All deploy scripts syntax OK"
 
       - name: Validate Python syntax
         run: |
@@ -38,6 +41,11 @@ jobs:
         run: |
           echo "Checking required files..."
           for f in deploy.sh common.yml .env.example docker-compose.yml; do
+            [ -f "$f" ] && echo "  ✅ $f" || { echo "  ❌ $f missing"; exit 1; }
+          done
+
+          echo "Checking deploy modules..."
+          for f in deploy/lib.sh deploy/00-pull.sh deploy/10-detect.sh deploy/20-deploy.sh deploy/90-summary.sh; do
             [ -f "$f" ] && echo "  ✅ $f" || { echo "  ❌ $f missing"; exit 1; }
           done
 
