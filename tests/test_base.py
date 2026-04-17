@@ -116,3 +116,91 @@ class TestApiHelpers:
             )
             with pytest.raises(RuntimeError, match="500"):
                 radarr._request("http://x/test", "GET")
+
+
+class TestExpandEnv:
+    """Env-var interpolation for secret placeholders."""
+
+    def test_substitutes_single_placeholder(self):
+        with patch.dict(os.environ, {"SECRET": "hunter2"}):
+            assert AppModule.expand_env("${SECRET}") == "hunter2"
+
+    def test_substitutes_in_dict_values(self):
+        with patch.dict(os.environ, {"USER": "alice", "PASS": "pw"}):
+            result = AppModule.expand_env({"Server.Username": "${USER}", "Server.Password": "${PASS}"})
+            assert result == {"Server.Username": "alice", "Server.Password": "pw"}
+
+    def test_missing_var_becomes_empty_string(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert AppModule.expand_env("${NOT_SET}") == ""
+
+    def test_non_strings_pass_through(self):
+        with patch.dict(os.environ, {"X": "1"}):
+            assert AppModule.expand_env({"n": 42, "b": True, "s": "${X}"}) == {"n": 42, "b": True, "s": "1"}
+
+    def test_recursive_into_lists(self):
+        with patch.dict(os.environ, {"A": "x", "B": "y"}):
+            assert AppModule.expand_env(["${A}", "${B}", "plain"]) == ["x", "y", "plain"]
+
+
+class TestReconcileDestructive:
+    """Merge-before-write primitive for destructive APIs (e.g. NZBget saveconfig)."""
+
+    class _FakeModule(AppModule):
+        name = "fake"
+        url_env = "FAKE_URL"
+        default_url = "http://fake"
+
+        def __init__(self, data_dir, mode, current):
+            super().__init__(data_dir, mode)
+            self._current = dict(current)
+            self.written = None
+
+        def fetch_config(self):
+            return dict(self._current)
+
+        def write_config(self, full):
+            self.written = dict(full)
+
+    def _make(self, data_dir, mode, current):
+        with patch.dict(os.environ, {"FAKE_URL": "http://x"}):
+            return self._FakeModule(data_dir, mode, current)
+
+    def test_writes_full_merged_set_on_change(self, data_dir):
+        mod = self._make(data_dir, "sync", {"A": "1", "B": "2", "C": "3"})
+        changed = mod.reconcile_destructive({"B": "99"})
+        assert changed == {"B"}
+        assert mod.written == {"A": "1", "B": "99", "C": "3"}  # full set preserved
+
+    def test_noop_when_desired_matches_current(self, data_dir):
+        mod = self._make(data_dir, "sync", {"A": "1", "B": "2"})
+        changed = mod.reconcile_destructive({"A": "1"})
+        assert changed == set()
+        assert mod.written is None
+
+    def test_adds_new_keys(self, data_dir):
+        mod = self._make(data_dir, "sync", {"A": "1"})
+        changed = mod.reconcile_destructive({"B": "2"})
+        assert changed == {"B"}
+        assert mod.written == {"A": "1", "B": "2"}
+
+    def test_diff_mode_does_not_write(self, data_dir):
+        mod = self._make(data_dir, "diff", {"A": "1"})
+        changed = mod.reconcile_destructive({"A": "99"})
+        assert changed == {"A"}
+        assert mod.written is None  # dry run
+
+    def test_string_coercion_for_comparison(self, data_dir):
+        # Services like NZBget return stringified values; desired is also string.
+        # An int-valued current should not register as change when desired=str.
+        mod = self._make(data_dir, "sync", {"Port": 563})
+        changed = mod.reconcile_destructive({"Port": "563"})
+        assert changed == set()
+        assert mod.written is None
+
+    def test_sensitive_key_detection(self, data_dir):
+        mod = self._make(data_dir, "sync", {"Server1.Password": "old"})
+        # Just validating the classifier, not the log side-effect
+        assert mod._is_sensitive("Server1.Password")
+        assert mod._is_sensitive("API_TOKEN")
+        assert not mod._is_sensitive("Server1.Host")

@@ -28,23 +28,32 @@ fi
 docker rm -f config-sync 2>/dev/null || true
 docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" up -d config-sync 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
 
-# Wait for it to finish
-sync_wait=0
-while [ $sync_wait -lt 120 ]; do
-  running=$(docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'config-sync' || true)
-  if [ "$running" -eq 0 ]; then break; fi
-  sleep 5
-  sync_wait=$((sync_wait + 5))
-done
-
-# Check exit code
-exit_code=$(docker inspect config-sync --format '{{.State.ExitCode}}' 2>/dev/null || echo "1")
-if [ "$exit_code" = "0" ]; then
-  ok "config-sync completed"
-  CONFIG_SYNC_OK=true
+# Block on the container until it actually exits. `docker wait` is the only
+# safe signal: polling `docker inspect .State.ExitCode` returns 0 while the
+# container is still running (ExitCode defaults to int-zero), which silently
+# reports success for a stuck run.
+#
+# The timeout must exceed sync.py's worst-case reachability window
+# (REACHABILITY_ATTEMPTS × (WAIT + BACKOFF) ≈ 5 min at today's defaults)
+# plus handshake + module work. 10 min covers it with headroom.
+#
+# See driftarr-spec/config-sync-engine.md §Core Principles #6.
+CONFIG_SYNC_TIMEOUT="${CONFIG_SYNC_TIMEOUT:-600}"
+log "Waiting up to ${CONFIG_SYNC_TIMEOUT}s for config-sync to finish..."
+if exit_code=$(timeout "$CONFIG_SYNC_TIMEOUT" docker wait config-sync 2>/dev/null) && [ -n "$exit_code" ]; then
+  if [ "$exit_code" = "0" ]; then
+    ok "config-sync completed"
+    CONFIG_SYNC_OK=true
+  else
+    err "config-sync exited with code $exit_code — declared config did not apply"
+    docker logs config-sync --tail 30 2>&1 | while read -r line; do log "  $line"; done
+    FAILED="$FAILED config-sync"
+  fi
 else
-  warn "config-sync exited with code $exit_code"
-  docker logs config-sync --tail 20 2>&1 | while read -r line; do log "  $line"; done
+  err "config-sync did not exit within ${CONFIG_SYNC_TIMEOUT}s — killing container"
+  docker logs config-sync --tail 30 2>&1 | while read -r line; do log "  $line"; done
+  docker kill config-sync 2>/dev/null || true
+  FAILED="$FAILED config-sync"
 fi
 
 # Restore HEAD's config data if we rolled back for sync

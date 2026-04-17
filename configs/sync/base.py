@@ -173,6 +173,88 @@ class AppModule:
             json.dump(data, f, indent=2)
             f.write("\n")
 
+    # ── Env-var expansion for secret interpolation ────
+
+    @staticmethod
+    def expand_env(value: Any) -> Any:
+        """Replace ${VAR} placeholders in strings with environment values.
+
+        Walks dicts/lists recursively. Non-string leaves pass through unchanged.
+        Missing env vars expand to empty string (matches shell behavior).
+        """
+        import re
+
+        pattern = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+
+        def sub(v: Any) -> Any:
+            if isinstance(v, str):
+                return pattern.sub(lambda m: os.environ.get(m.group(1), ""), v)
+            if isinstance(v, dict):
+                return {k: sub(x) for k, x in v.items()}
+            if isinstance(v, list):
+                return [sub(x) for x in v]
+            return v
+
+        return sub(value)
+
+    # ── Destructive-write reconciliation ──────────────
+    #
+    # For services whose write API replaces the entire config on each call
+    # (e.g. NZBget's saveconfig JSON-RPC), sending a partial payload silently
+    # deletes every other key. Subclasses override fetch_config and
+    # write_config, then call reconcile_destructive(desired) to apply the
+    # merge-before-write invariant.
+    #
+    # See driftarr-spec/config-sync-engine.md § Core Principles.
+
+    SENSITIVE_KEY_PATTERNS = ("password", "secret", "token", "apikey", "api_key")
+
+    def fetch_config(self) -> dict:
+        """Return the service's current config as a flat {str: str} dict.
+
+        Override in subclasses that use reconcile_destructive().
+        """
+        raise NotImplementedError
+
+    def write_config(self, full_config: dict) -> None:
+        """Write the complete merged config back to the service.
+
+        Override in subclasses that use reconcile_destructive().
+        """
+        raise NotImplementedError
+
+    def _is_sensitive(self, key: str) -> bool:
+        k = key.lower()
+        return any(p in k for p in self.SENSITIVE_KEY_PATTERNS)
+
+    def reconcile_destructive(self, desired: dict) -> dict:
+        """Merge desired onto live config and write full set back.
+
+        Returns the set of keys whose values changed (empty set = no-op).
+        In diff mode, logs what would change without writing.
+        """
+        current = self.fetch_config()
+        changed = {k: v for k, v in desired.items() if str(current.get(k, "")) != str(v)}
+        if not changed:
+            self.log("config in sync")
+            return set()
+
+        for k, new in changed.items():
+            old = current.get(k, "")
+            if self._is_sensitive(k):
+                self.log(f"{k}: *** -> *** (changed)")
+            else:
+                self.log(f"{k}: {old!r} -> {new!r}")
+
+        if self.mode == "diff":
+            self.log(f"would write {len(current | changed)} keys ({len(changed)} changed)")
+            return set(changed.keys())
+
+        merged = {**current, **changed}
+        self.write_config(merged)
+        self.log(f"wrote {len(merged)} keys ({len(changed)} changed)")
+        return set(changed.keys())
+
     # ── Interface (override these) ────────────────────
 
     def sync(self):

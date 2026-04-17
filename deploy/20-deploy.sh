@@ -39,6 +39,28 @@ deploy_stack() {
     docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
 
+  # Recover from static-IP recreation race. `docker compose up -d` for
+  # services with a fixed ipv4_address occasionally loses the race with
+  # the old container releasing its IP — the new container ends up in
+  # `created` state with "Address already in use" and never starts.
+  # Docker's restart policy does not recover `created` (it only recovers
+  # `exited`), and subsequent deploys see a running-looking stack because
+  # snapshot_containers only lists running containers.
+  local created_containers
+  if [ "$stack" = "root" ]; then
+    created_containers=$(docker compose ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
+  else
+    created_containers=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
+  fi
+  if [ -n "$created_containers" ]; then
+    warn "Containers stuck in 'created' state — retrying start:"
+    echo "$created_containers" | while read -r cname; do
+      [ -z "$cname" ] && continue
+      log "  starting $cname..."
+      docker start "$cname" 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -3
+    done
+  fi
+
   # Wait for health checks to settle
   log "Waiting for health checks to settle..."
   local health_wait=0
