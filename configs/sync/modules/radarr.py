@@ -22,6 +22,9 @@ class RadarrModule(AppModule):
         "naming.json",
         "media-management.json",
         "root-folders.json"
+        # notifications.json is intentionally NOT required — the module has
+        # additive semantics there (see _sync_notifications) and a missing
+        # file is the "nothing declared" signal, not bootstrap.
     ]
 
     # Download client post-import category field + value
@@ -37,6 +40,7 @@ class RadarrModule(AppModule):
         self._export_naming()
         self._export_media_management()
         self._export_root_folders()
+        self._export_notifications()
 
     def _export_custom_formats(self):
         raw = self.api_get("customformat")
@@ -109,6 +113,46 @@ class RadarrModule(AppModule):
         self.write_json("root-folders.json", exported)
         self.log(f"exported {len(exported)} root folders")
 
+    # Event-toggle keys in *arr notification payloads. Present/absent set varies
+    # by app (Sonarr vs Radarr) and version — handle them generically by prefix.
+    _TOGGLE_PREFIX = "on"
+
+    def _notification_toggles(self, entry: dict) -> dict:
+        """Return only the on*/includeHealthWarnings keys from a notification."""
+        out = {}
+        for k, v in entry.items():
+            if k.startswith(self._TOGGLE_PREFIX) and isinstance(v, bool):
+                out[k] = v
+            elif k == "includeHealthWarnings" and isinstance(v, bool):
+                out[k] = v
+        return out
+
+    def _export_notifications(self):
+        raw = self.api_get("notification")
+        exported = []
+        for n in sorted(raw, key=lambda x: x["name"]):
+            entry = {
+                "name": n["name"],
+                "implementation": n["implementation"],
+            }
+            # Export event toggles that are True. Ignoring False keeps diffs small
+            # across Sonarr/Radarr versions that add new toggle keys over time.
+            for k, v in self._notification_toggles(n).items():
+                if v:
+                    entry[k] = True
+            fields = [
+                {"name": f["name"], "value": f["value"]}
+                for f in n.get("fields", [])
+                if f.get("value") not in (None, "", [], {})
+            ]
+            if fields:
+                entry["fields"] = fields
+            if n.get("tags"):
+                entry["tags"] = n["tags"]
+            exported.append(entry)
+        self.write_json("notifications.json", exported)
+        self.log(f"exported {len(exported)} notifications")
+
     # ── Sync ──────────────────────────────────────────
 
     def sync(self):
@@ -119,6 +163,7 @@ class RadarrModule(AppModule):
         self._sync_media_management()
         self._sync_root_folders()
         self._sync_download_clients()
+        self._sync_notifications()
 
     def _strip_cf(self, cf):
         return {
@@ -364,6 +409,100 @@ class RadarrModule(AppModule):
             self.log(f"root folders: all {len(desired)} in sync")
         else:
             self.log(f"root folders: {changes} changed")
+
+    def _sync_notifications(self):
+        """Reconcile /api/v3/notification entries against notifications.json.
+
+        Additive semantics: creates/updates entries whose name matches a
+        desired entry, leaves other remote notifications alone. Notifications
+        are commonly added ad-hoc via the *arr UI (Discord, webhooks, etc.)
+        so a declarative-delete would wipe user entries. Declared entries
+        *are* reconciled fully — fields and event toggles match the file.
+
+        For create operations, fetches /api/v3/notification/schema and uses
+        the template for the target `implementation` so required default
+        fields are populated — *arr rejects POSTs that omit schema fields.
+        """
+        desired = self.load_json("notifications.json")
+        if desired is None:
+            # Missing file = nothing declared. Do nothing (additive).
+            return
+
+        remote = self.api_get("notification") or []
+        remote_by_name = {n["name"]: n for n in remote}
+        schemas = None  # lazy-fetched on first create
+
+        for dn in desired:
+            name = dn["name"]
+            impl = dn["implementation"]
+            desired_fields = {f["name"]: f["value"] for f in dn.get("fields", [])}
+            desired_toggles = self._notification_toggles(dn)
+
+            if name in remote_by_name:
+                existing = remote_by_name[name]
+                updated = False
+
+                for k, v in desired_toggles.items():
+                    if existing.get(k) != v:
+                        if self.mode == "diff":
+                            self.log(f"notification '{name}': {k} {existing.get(k)} -> {v}")
+                        existing[k] = v
+                        updated = True
+                # Toggles not listed in desired are assumed default-false — if
+                # the remote has a stray True we didn't declare, reset it.
+                for k, v in self._notification_toggles(existing).items():
+                    if v and k not in desired_toggles:
+                        if self.mode == "diff":
+                            self.log(f"notification '{name}': {k} {v} -> False")
+                        existing[k] = False
+                        updated = True
+
+                for k, v in desired_fields.items():
+                    replaced = False
+                    for f in existing.get("fields", []):
+                        if f["name"] == k:
+                            if f.get("value") != v:
+                                if self.mode == "diff":
+                                    self.log(f"notification '{name}': field {k} {f.get('value')!r} -> {v!r}")
+                                f["value"] = v
+                                updated = True
+                            replaced = True
+                            break
+                    if not replaced:
+                        if self.mode == "diff":
+                            self.log(f"notification '{name}': add field {k}={v!r}")
+                        existing.setdefault("fields", []).append({"name": k, "value": v})
+                        updated = True
+
+                if updated and self.mode != "diff":
+                    self.api_put(f"notification/{existing['id']}", existing)
+                    self.log(f"notification '{name}': updated")
+                elif not updated:
+                    self.log(f"notification '{name}': in sync")
+            else:
+                if schemas is None:
+                    schemas = self.api_get("notification/schema") or []
+                template = next(
+                    (s for s in schemas if s.get("implementation") == impl),
+                    None,
+                )
+                if template is None:
+                    self.log(f"WARNING: no schema for implementation '{impl}' — skipping '{name}'")
+                    continue
+                new_entry = copy.deepcopy(template)
+                new_entry.pop("id", None)
+                new_entry["name"] = name
+                for k, v in desired_toggles.items():
+                    new_entry[k] = v
+                for f in new_entry.get("fields", []):
+                    if f["name"] in desired_fields:
+                        f["value"] = desired_fields[f["name"]]
+                new_entry["tags"] = dn.get("tags", [])
+                if self.mode == "diff":
+                    self.log(f"notification '{name}': would create")
+                else:
+                    self.api_post("notification", new_entry)
+                    self.log(f"notification '{name}': created")
 
     def _sync_download_clients(self):
         if not self.import_category_field:
