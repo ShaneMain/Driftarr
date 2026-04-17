@@ -3,6 +3,87 @@
 # Reads: STACKS, BEFORE, AFTER, BUILD_STACKS
 # Writes: SUCCEEDED, FAILED, ROLLED_BACK
 
+# ── Static-IP race prevention ────────────────────────
+# `docker compose up -d` recreates containers atomically (stop → rm →
+# create → start) but the kernel network namespace cleanup is async.
+# For services with a fixed ipv4_address the new container tries to bind
+# an IP the old namespace hasn't released yet, leaving it in `created`
+# state with "Address already in use". Docker's restart policy does not
+# recover `created` state.
+#
+# Layer 1 (prevention): before `up -d`, stop services that have a
+#   static IP so the address is fully released by the time the new
+#   container starts. Brief extra downtime (seconds) — acceptable for
+#   media stacks that deploy infrequently.
+#
+# Layer 2 (safety net): after `up -d`, retry-with-backoff any
+#   containers still stuck in `created` state.
+
+_static_ip_services() {
+  # Extract service names that declare ipv4_address from a compose file.
+  # Pure awk on the YAML — no yq/jq dependency.
+  local compose_file="$1"
+  awk '/^  [a-z][a-z0-9_-]+:/{svc=$1; sub(/:$/,"",svc)} /ipv4_address:/{print svc}' \
+    "$compose_file" 2>/dev/null | sort -u
+}
+
+_pre_stop_static_ip() {
+  # Layer 1: stop static-IP services before `up -d` so the IP is free.
+  local stack="$1"
+  local compose_file services
+  if [ "$stack" = "root" ]; then
+    compose_file="$REPO_DIR/docker-compose.yml"
+  else
+    compose_file="$REPO_DIR/$stack/docker-compose.yml"
+  fi
+  services=$(_static_ip_services "$compose_file")
+  [ -z "$services" ] && return 0
+  log "Pre-stopping static-IP services to avoid address race..."
+  for svc in $services; do
+    if [ "$stack" = "root" ]; then
+      docker compose stop "$svc" 2>/dev/null || true
+    else
+      docker compose -p "$stack" -f "$compose_file" stop "$svc" 2>/dev/null || true
+    fi
+  done
+  # Give the kernel time to tear down the network namespace and free the IP
+  sleep 3
+}
+
+_recover_created_containers() {
+  # Layer 2: retry-with-backoff for any containers stuck in `created` state.
+  local stack="$1"
+  local created_containers retry max_retries=5
+  for retry in $(seq 1 "$max_retries"); do
+    if [ "$stack" = "root" ]; then
+      created_containers=$(docker compose ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
+    else
+      created_containers=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
+    fi
+    [ -z "$created_containers" ] && return 0
+    if [ "$retry" -eq 1 ]; then
+      warn "Containers stuck in 'created' state — retrying with backoff:"
+    fi
+    log "  attempt $retry/$max_retries (waiting ${retry}s)..."
+    sleep "$retry"
+    echo "$created_containers" | while read -r cname; do
+      [ -z "$cname" ] && continue
+      log "  starting $cname..."
+      docker start "$cname" 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -3 || true
+    done
+  done
+  # Final check — log any survivors
+  if [ "$stack" = "root" ]; then
+    created_containers=$(docker compose ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
+  else
+    created_containers=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
+  fi
+  if [ -n "$created_containers" ]; then
+    warn "Containers still stuck after $max_retries retries:"
+    echo "$created_containers" | while read -r cname; do warn "  $cname"; done
+  fi
+}
+
 deploy_stack() {
   local stack="$1"
   local timeout
@@ -27,6 +108,9 @@ deploy_stack() {
     echo "$before_state" | while read -r line; do log "  $line"; done
   fi
 
+  # Layer 1: pre-stop static-IP services to prevent address race
+  _pre_stop_static_ip "$stack"
+
   if [ "$stack" = "root" ]; then
     log "Root compose changed — updating all services"
     docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
@@ -39,27 +123,8 @@ deploy_stack() {
     docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
 
-  # Recover from static-IP recreation race. `docker compose up -d` for
-  # services with a fixed ipv4_address occasionally loses the race with
-  # the old container releasing its IP — the new container ends up in
-  # `created` state with "Address already in use" and never starts.
-  # Docker's restart policy does not recover `created` (it only recovers
-  # `exited`), and subsequent deploys see a running-looking stack because
-  # snapshot_containers only lists running containers.
-  local created_containers
-  if [ "$stack" = "root" ]; then
-    created_containers=$(docker compose ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
-  else
-    created_containers=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --status=created --format '{{.Name}}' 2>/dev/null || true)
-  fi
-  if [ -n "$created_containers" ]; then
-    warn "Containers stuck in 'created' state — retrying start:"
-    echo "$created_containers" | while read -r cname; do
-      [ -z "$cname" ] && continue
-      log "  starting $cname..."
-      docker start "$cname" 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -3
-    done
-  fi
+  # Layer 2: recover any containers that still hit the race
+  _recover_created_containers "$stack"
 
   # Wait for health checks to settle
   log "Waiting for health checks to settle..."
@@ -155,6 +220,8 @@ rollback_stack() {
 
   git checkout "$BEFORE" -- "$stack/" 2>/dev/null || git checkout "$BEFORE" -- "$stack" 2>/dev/null || true
 
+  _pre_stop_static_ip "$stack"
+
   if [ "$stack" = "root" ]; then
     git checkout "$BEFORE" -- docker-compose.yml 2>/dev/null || true
     docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
@@ -164,6 +231,8 @@ rollback_stack() {
   else
     docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
+
+  _recover_created_containers "$stack"
 
   git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true
   trap - EXIT
