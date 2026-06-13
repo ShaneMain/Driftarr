@@ -3,6 +3,9 @@ name: Validate
 on:
   push:
     branches: [main]
+    # Config-only auto-export pushes (configs/data/) don't need validation.
+    paths-ignore:
+      - 'configs/data/**'
   pull_request:
 
 jobs:

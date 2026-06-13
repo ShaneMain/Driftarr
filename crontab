@@ -2,5 +2,5 @@
 # Do not edit via `crontab -e`; changes will be overwritten on next deploy.
 # To add a job: add a line here, commit, push → deploy installs it automatically.
 
-# ── Config export (pull live API state → git) ─────────────────────────────
-0 * * * * /home/$USER/docker-stacks/configs/run-export.sh >> /home/$USER/config-export.log 2>&1
+# ── Config export (pull live API state → git) — daily; commits only on change ──
+0 4 * * * /home/$USER/docker-stacks/configs/run-export.sh >> /home/$USER/config-export.log 2>&1

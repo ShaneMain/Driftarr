@@ -7,6 +7,11 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # Config-only auto-export pushes (configs/data/) must not spin up a deploy
+    # runner — deploy.sh skips them anyway, so this avoids a wasted Tailscale
+    # join + SSH. Apply manual config edits with workflow_dispatch.
+    paths-ignore:
+      - 'configs/data/**'
   workflow_dispatch:
 
 concurrency:
