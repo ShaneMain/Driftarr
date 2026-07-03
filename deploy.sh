@@ -23,6 +23,23 @@ CONFIG_SYNC_STACK="${DEPLOY_CONFIG_SYNC_STACK:-media}"
 
 cd "$REPO_DIR"
 
+# ── Failure notification (optional) ───────────────────
+# Set DEPLOY_NOTIFY_URL to a webhook that accepts {"title","message"} JSON
+# (ntfy, Gotify, a Signal relay, ...) to get alerted when a deploy fails.
+# Any module failure (set -e or explicit exit >0) lands here before dying.
+notify_failure() {
+  local rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ -z "${DEPLOY_NOTIFY_URL:-}" ] && return 0
+  local commit
+  commit=$(git log --oneline -1 2>/dev/null | head -c 120 | tr '"\\' "'/")
+  curl -sf -m 10 -X POST "$DEPLOY_NOTIFY_URL" \
+    -H 'Content-Type: application/json' \
+    -d "{\"title\": \"❌ Deploy failed (exit $rc)\", \"message\": \"$commit — check: journalctl -t $LOG_TAG -n 100\"}" \
+    >/dev/null 2>&1 || true
+}
+trap notify_failure EXIT
+
 # ── Source shared library ─────────────────────────────
 source "$REPO_DIR/deploy/lib.sh"
 

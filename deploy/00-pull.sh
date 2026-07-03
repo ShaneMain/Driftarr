@@ -56,8 +56,29 @@ if [ -n "${DEPLOY_REEXEC:-}" ]; then
   info "Re-exec'd with updated deploy.sh (${BEFORE:0:7} → ${AFTER:0:7})"
 else
   BEFORE=$(git rev-parse HEAD)
+
+  # ── Dirty worktree recovery ─────────────────────────
+  # Manual edits or interrupted exports on the server can block `git pull
+  # --ff-only` ("local/untracked changes would be overwritten"), wedging every
+  # deploy until a human intervenes. Only when the pull is actually blocked:
+  # stash everything dirty (recoverable via `git stash list`) and retry once.
+  # Untracked runtime files that don't collide with incoming changes are
+  # deliberately left alone.
   info "Pulling latest changes..."
-  git pull --ff-only origin "$BRANCH"
+  if ! git pull --ff-only origin "$BRANCH"; then
+    warn "Pull blocked by local changes — stashing and retrying:"
+    git status --porcelain | while read -r line; do warn "  $line"; done
+    if ! git stash push --include-untracked -m "deploy-autostash $(date -Is)" >/dev/null; then
+      err "Could not stash local changes — resolve manually on the server"
+      exit 1
+    fi
+    warn "Stashed (recover with: git stash list / git stash pop)"
+    if ! git pull --ff-only origin "$BRANCH"; then
+      err "git pull --ff-only still failing — checkout diverged from origin/$BRANCH"
+      err "Inspect on the server: git status && git log --oneline -5 && git stash list"
+      exit 1
+    fi
+  fi
   AFTER=$(git rev-parse HEAD)
 
   if [ "$BEFORE" = "$AFTER" ]; then

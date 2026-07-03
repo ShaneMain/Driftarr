@@ -73,16 +73,36 @@ deploy_stack() {
     echo "$before_state" | while read -r line; do log "  $line"; done
   fi
 
+  # Pre-pull images with retries — separates transient registry failures
+  # (retryable, zero downtime) from real deploy failures (rollback). Non-fatal:
+  # `up` can still succeed on cached images if the registry stays down.
+  # Skipped for build stacks (their images aren't pullable) and the legacy
+  # root path.
+  if [ "$stack" != "root" ] && ! needs_build "$stack"; then
+    local pull_ok=false attempt
+    for attempt in 1 2 3; do
+      if compose_cmd "$stack" pull --quiet 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -5; then
+        pull_ok=true
+        break
+      fi
+      warn "Image pull failed (attempt $attempt/3) — retrying in $((attempt * 5))s..."
+      sleep $((attempt * 5))
+    done
+    [ "$pull_ok" = true ] || warn "Pre-pull failed after 3 attempts — proceeding with cached images"
+  fi
+
   if [ "$stack" = "root" ]; then
+    # Legacy path — 10-detect.sh now expands root compose changes into
+    # per-stack deploys, so this only runs if "root" is passed explicitly.
     log "Root compose changed — updating all services"
     docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   elif needs_build "$stack"; then
     log "Building $stack images..."
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
+    compose_cmd "$stack" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
     log "Starting $stack..."
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   else
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
 
   # Recover from static-IP recreation race
@@ -176,6 +196,17 @@ deploy_stack() {
 
 rollback_stack() {
   local stack="$1"
+
+  # A stack that didn't exist at BEFORE can't be rolled back — checking out
+  # its old (nonexistent) files would silently redeploy the same broken
+  # version. Take it down instead.
+  if [ "$stack" != "root" ] && ! git cat-file -e "$BEFORE:$stack" 2>/dev/null; then
+    warn "$stack did not exist at ${BEFORE:0:7} — stopping it instead of rolling back"
+    compose_cmd "$stack" down 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -5 || true
+    ROLLED_BACK="$ROLLED_BACK $stack(stopped)"
+    return
+  fi
+
   warn "Rolling back $stack to ${BEFORE:0:7}..."
 
   trap 'git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true; trap - EXIT' EXIT
@@ -186,10 +217,10 @@ rollback_stack() {
     git checkout "$BEFORE" -- docker-compose.yml 2>/dev/null || true
     docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   elif needs_build "$stack"; then
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    compose_cmd "$stack" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
+    compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   else
-    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
   fi
 
   _recover_created_containers "$stack"
@@ -199,6 +230,17 @@ rollback_stack() {
 
   ROLLED_BACK="$ROLLED_BACK $stack"
   warn "$stack rolled back to ${BEFORE:0:7}"
+
+  # Verify the rollback actually came up — "rolled back" must not silently
+  # mean "rolled back to something also broken".
+  sleep 10
+  local rb_state rb_bad
+  rb_state=$(snapshot_containers "$stack")
+  rb_bad=$(echo "$rb_state" | grep -iE 'unhealthy|restarting|created' || true)
+  if [ -n "$rb_bad" ]; then
+    err "$stack is still unhealthy AFTER rollback — needs manual attention:"
+    echo "$rb_bad" | while read -r line; do err "  $line"; done
+  fi
 }
 
 # ── Deploy Loop ───────────────────────────────────────

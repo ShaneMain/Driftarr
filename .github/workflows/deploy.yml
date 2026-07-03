@@ -1,17 +1,20 @@
 # Deploy workflow — copy this to your own repo and configure secrets
 # See docs/server-setup.md for required GitHub Secrets
 #
-# To enable: remove the `if: false` line below and add your secrets
+# To enable: replace the `if: false` line below with the gate condition shown
+# next to it, and add your secrets.
+#
+# Gated on Validate: this workflow fires when Validate completes on main and
+# only deploys if it passed. Config-only auto-export pushes never run Validate
+# (paths-ignore there), so they never reach here either. Manual runs via
+# workflow_dispatch skip the gate.
 name: Deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Validate"]
+    types: [completed]
     branches: [main]
-    # Config-only auto-export pushes (configs/data/) must not spin up a deploy
-    # runner — deploy.sh skips them anyway, so this avoids a wasted Tailscale
-    # join + SSH. Apply manual config edits with workflow_dispatch.
-    paths-ignore:
-      - 'configs/data/**'
   workflow_dispatch:
 
 concurrency:
@@ -21,8 +24,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    if: false  # Template only — remove this line after configuring secrets
+    timeout-minutes: 30
+    # Template only — after configuring secrets, replace with:
+    # if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: false
     steps:
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
@@ -37,27 +42,40 @@ jobs:
         run: |
           mkdir -p ~/.ssh
 
-          # Wait for Tailscale connectivity to the deploy target
+          # Wait for Tailscale connectivity to the deploy target (fail fast:
+          # proceeding without it just dies later with a cryptic SSH error)
+          ts_ok=false
           for i in 1 2 3 4 5; do
             if tailscale ping --timeout=5s ${{ secrets.DEPLOY_HOST }} >/dev/null 2>&1; then
               echo "Tailscale connectivity confirmed"
+              ts_ok=true
               break
             fi
             echo "Waiting for Tailscale connectivity... (attempt $i)"
             sleep 3
           done
+          if [ "$ts_ok" != true ]; then
+            echo "::error::No Tailscale connectivity to deploy target after 5 attempts"
+            exit 1
+          fi
 
           # Pre-scan the host key (retry in case of transient failure)
+          scan_ok=false
           for i in 1 2 3; do
             if ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null; then
               if [ -s ~/.ssh/known_hosts ]; then
                 echo "Host key scanned successfully"
+                scan_ok=true
                 break
               fi
             fi
             echo "ssh-keyscan attempt $i failed, retrying..."
             sleep 2
           done
+          if [ "$scan_ok" != true ]; then
+            echo "::error::ssh-keyscan failed after 3 attempts"
+            exit 1
+          fi
 
           # Load the key into the agent so it's never written to disk
           eval "$(ssh-agent -s)"

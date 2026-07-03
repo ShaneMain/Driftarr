@@ -17,9 +17,15 @@ while IFS= read -r file; do
       [ -f "$d/docker-compose.yml" ] && STACKS="$STACKS $(basename "$d")"
     done
   fi
-  # Root docker-compose.yml
+  # Root docker-compose.yml affects all stacks. Deploy each with its own
+  # project (-p <stack>) rather than one merged repo-root project — a root
+  # `docker compose up` claims the same container_names under a different
+  # project name, causing "name already in use" conflicts with the per-stack
+  # projects that normally own them.
   if [ "$file" = "docker-compose.yml" ]; then
-    STACKS="$STACKS root"
+    for d in "$REPO_DIR"/*/; do
+      [ -f "$d/docker-compose.yml" ] && STACKS="$STACKS $(basename "$d")"
+    done
   fi
   # deploy/ module changes don't trigger stack deploys (they're sourced fresh)
 done <<< "$CHANGED"

@@ -22,6 +22,26 @@ jobs:
           done
           echo "✅ All compose files validated"
 
+      - name: Report services without healthchecks
+        run: |
+          # Informational only: the deploy health gate can only see containers
+          # that define a healthcheck — services without one pass silently.
+          missing=0
+          for f in $(find . -name 'docker-compose.yml' ! -path './docker-compose.yml'); do
+            json=$(docker compose -f "$f" --env-file .env.example config --format json 2>/dev/null) || continue
+            no_hc=$(echo "$json" | jq -r '.services | to_entries[] | select(.value.healthcheck == null) | .key' 2>/dev/null)
+            if [ -n "$no_hc" ]; then
+              echo "⚠️  $f:"
+              echo "$no_hc" | sed 's/^/      /'
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "::warning::Some services lack healthchecks — the deploy health gate cannot see them"
+          else
+            echo "✅ All services define healthchecks"
+          fi
+
       - name: Validate deploy scripts
         run: |
           bash -n deploy.sh

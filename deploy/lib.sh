@@ -75,6 +75,17 @@ stack_script_category() {
 }
 
 # ── Container Helpers ─────────────────────────────────
+# Run docker compose scoped to a stack's project ("root" = repo-root project).
+# Usage: compose_cmd <stack> <compose args...>
+compose_cmd() {
+  local stack="$1"; shift
+  if [ "$stack" = "root" ]; then
+    docker compose "$@"
+  else
+    docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" "$@"
+  fi
+}
+
 snapshot_containers() {
   local stack_dir="$1"
   if [ "$stack_dir" = "root" ]; then
@@ -85,11 +96,19 @@ snapshot_containers() {
 }
 
 # ── File Checksum (for drift detection) ───────────────
-# Includes the root common.yml since all stacks extend it
+# Hashes git-TRACKED files only, recursively — subdirectories (config/,
+# provisioning/, ...) count, but runtime data living inside stack dirs can't
+# cause perpetual drift. Includes the root common.yml since all stacks extend
+# it. docker-compose.yml is excluded: compose changes deploy via git-diff
+# detection; drift covers everything else (scripts, configs, hooks).
 stack_file_hash() {
   local stack_dir="$1"
+  local rel="${stack_dir#"$REPO_DIR"/}"
+  rel="${rel%/}"
   {
-    find "$stack_dir" -maxdepth 1 -type f ! -name 'docker-compose.yml' -exec md5sum {} +
+    git -C "$REPO_DIR" ls-files -z -- "$rel" \
+      | grep -zv 'docker-compose\.yml$' \
+      | (cd "$REPO_DIR" && xargs -0 -r md5sum)
     [ -f "$REPO_DIR/common.yml" ] && md5sum "$REPO_DIR/common.yml"
   } 2>/dev/null | sort | md5sum | awk '{print $1}'
 }
