@@ -75,26 +75,41 @@ while IFS= read -r file; do
     configs/*) CONFIG_CHANGES=true ;;
     */*.sh) SCRIPT_CHANGES="$SCRIPT_CHANGES ${file##*/}" ;;
   esac
-
-  # Check stack.conf hot-reload patterns
-  dir=$(echo "$file" | cut -d/ -f1)
-  if [ -f "$REPO_DIR/$dir/stack.conf" ]; then
-    patterns=$(stack_hot_reload_patterns "$dir")
-    if [ -n "$patterns" ]; then
-      rel_path="${file#"$dir"/}"
-      for pattern in $patterns; do
-        # shellcheck disable=SC2254
-        case "$rel_path" in
-          $pattern)
-            # File matches a hot-reload pattern — remove stack from deploy list
-            # (it'll be handled by 30-reload.sh instead)
-            STACKS=$(echo "$STACKS" | tr ' ' '\n' | grep -v "^${dir}$" | tr '\n' ' ' | xargs)
-            ;;
-        esac
-      done
-    fi
-  fi
 done <<< "$CHANGED"
+
+# ── Hot-reload vs deploy ──────────────────────────────
+# A stack is downgraded from deploy to hot-reload (30-reload.sh) only if EVERY
+# changed file in it matches its STACK_HOT_RELOAD_PATTERNS — a compose or
+# script change alongside a reloadable config still needs a real deploy.
+# Drift-detected stacks (no changed files) always deploy.
+for stack in $STACKS; do
+  [ "$stack" = "root" ] && continue
+  [ -f "$REPO_DIR/$stack/stack.conf" ] || continue
+  patterns=$(stack_hot_reload_patterns "$stack")
+  [ -z "$patterns" ] && continue
+  stack_changed=false
+  all_reloadable=true
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    case "$file" in
+      "$stack"/*) ;;
+      *) continue ;;
+    esac
+    stack_changed=true
+    rel_path="${file#"$stack"/}"
+    matched=false
+    for pattern in $patterns; do
+      # shellcheck disable=SC2254
+      case "$rel_path" in
+        $pattern) matched=true ;;
+      esac
+    done
+    [ "$matched" = false ] && all_reloadable=false
+  done <<< "$CHANGED"
+  if [ "$stack_changed" = true ] && [ "$all_reloadable" = true ]; then
+    STACKS=$(echo "$STACKS" | tr ' ' '\n' | grep -v "^${stack}$" | tr '\n' ' ' | xargs)
+  fi
+done
 
 # ── Log Config Diffs ──────────────────────────────────
 if [ "$CONFIG_CHANGES" = true ]; then
