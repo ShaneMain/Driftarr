@@ -116,7 +116,10 @@ deploy_stack() {
     health_wait=$((health_wait + 10))
     local current_state
     current_state=$(snapshot_containers "$stack")
-    if ! echo "$current_state" | grep -qi 'starting'; then
+    # Match the healthcheck grace state specifically — a bare 'starting' also
+    # matches "Restarting (1)...", letting crash-looping containers pass as
+    # still-starting (found via caddy crash-loop, 2026-07)
+    if ! echo "$current_state" | grep -qi 'health: starting'; then
       break
     fi
     [ $((health_wait % 30)) -eq 0 ] && log "Still waiting for health checks... (${health_wait}s)"
@@ -158,7 +161,7 @@ deploy_stack() {
   fi
 
   local exited
-  exited=$(echo "$after_state" | grep -ivE '(running|healthy|Up|starting|Exited \(0\))' || true)
+  exited=$(echo "$after_state" | grep -ivE '(running|healthy|Up|health: starting|Exited \(0\))' || true)
   if [ -n "$exited" ]; then
     warn "Non-running containers detected in $stack:"
     echo "$exited" | while read -r line; do warn "  $line"; done
