@@ -1,0 +1,4 @@
+# Scaffolded by homepage at runtime if absent; never config we own
+config/logs/
+config/custom.css
+config/custom.js

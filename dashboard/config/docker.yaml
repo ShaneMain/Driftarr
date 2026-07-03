@@ -1,0 +1,6 @@
+---
+# Read-only Docker API via the stack's own socket proxy (CONTAINERS=1).
+# Gives per-service status dots + cpu/mem stats for entries with `container:`.
+dockerproxy:
+  host: dockerproxy
+  port: 2375

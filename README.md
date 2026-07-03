@@ -20,7 +20,7 @@ No more SSHing into servers to run `docker compose up -d` by hand.
 
 ## Overview
 
-Driftarr applies DevOps and Infrastructure as Code (IaC) principles to self-hosted Docker Compose environments. It ships with a media server stack (Sonarr, Radarr, Bazarr, Prowlarr, NZBGet) and a VPN-tunneled download setup as a working reference implementation, but the pipeline itself is stack-agnostic — any Docker Compose service works.
+Driftarr applies DevOps and Infrastructure as Code (IaC) principles to self-hosted Docker Compose environments. It ships with a media server stack (Sonarr, Radarr, Bazarr, Prowlarr, NZBGet) and a VPN-tunneled download setup, plus a Homepage dashboard tying it together, as a working reference implementation, but the pipeline itself is stack-agnostic — any Docker Compose service works.
 
 The deploy pipeline, security model, and config sync engine are the core value. The included stacks are just a starting point.
 
@@ -115,6 +115,9 @@ For manual setup, see [docs/server-setup.md](docs/server-setup.md). For common i
 ├── downloads/                   # Gluetun VPN + qBittorrent + Prowlarr
 │   ├── common.yml
 │   └── docker-compose.yml
+├── dashboard/                  # Homepage landing page + read-only docker proxy
+│   ├── docker-compose.yml
+│   └── config/                 # services.yaml (app list), settings.yaml, ...
 ├── monitoring/                 # Optional: Prometheus + Grafana + Node Exporter
 │   ├── docker-compose.yml
 │   └── prometheus.yml

@@ -1,0 +1,60 @@
+# Dashboard — Homepage (gethomepage.dev): landing page for every web UI, with
+# live widgets and per-container status dots.
+#
+# The app list lives in ./config/services.yaml. Widget API keys are injected
+# from .env as HOMEPAGE_VAR_* env vars and referenced as {{HOMEPAGE_VAR_*}}
+# placeholders — secrets never live in the config files.
+#
+# Requires in .env:
+#   DASHBOARD_HOST — LAN IP or DNS name of this server (used to build links
+#                    and to poll app APIs via their host-published ports)
+services:
+  dashboard:
+    extends:
+      file: ../common.yml
+      service: default
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: dashboard
+    ports:
+      - "3004:3000"
+    environment:
+      # Host:port origins allowed to serve the page. Defaults to * for
+      # plug-and-play; tighten to e.g. "192.168.1.50:3004,server.lan:3004".
+      - HOMEPAGE_ALLOWED_HOSTS=${DASHBOARD_ALLOWED_HOSTS:-*}
+      - HOMEPAGE_VAR_HOST=${DASHBOARD_HOST}
+      - HOMEPAGE_VAR_SONARR_KEY=${SONARR_API_KEY}
+      - HOMEPAGE_VAR_RADARR_KEY=${RADARR_API_KEY}
+      - HOMEPAGE_VAR_PROWLARR_KEY=${PROWLARR_API_KEY}
+    volumes:
+      - ./config:/app/config
+      # Keep runtime logs out of the git checkout
+      - dashboard_logs:/app/config/logs
+    depends_on:
+      - dockerproxy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthcheck >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Read-only Docker API for homepage's status dots + container stats.
+  # CONTAINERS=1 only — no exec/write endpoints are exposed, and the proxy
+  # publishes no host port (reachable only from this stack's network).
+  dockerproxy:
+    extends:
+      file: ../common.yml
+      service: default
+    image: ghcr.io/tecnativa/docker-socket-proxy:latest
+    container_name: dashboard-dockerproxy
+    environment:
+      - CONTAINERS=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:2375/_ping || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  dashboard_logs:

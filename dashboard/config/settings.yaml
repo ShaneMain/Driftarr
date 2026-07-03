@@ -1,0 +1,19 @@
+---
+title: Driftarr
+theme: dark
+color: slate
+headerStyle: boxed
+statusStyle: dot
+hideVersion: true
+useEqualHeights: true
+
+# Media renders as a full-width band (cards per row) so its widgets get room;
+# the remaining groups sit side by side as columns beneath it.
+layout:
+  Media:
+    style: row
+    columns: 4
+  Downloads:
+    style: column
+  Ops:
+    style: column

@@ -1,0 +1,76 @@
+---
+# App list. Conventions:
+# - href       = what a click opens: http://{{HOMEPAGE_VAR_HOST}}:<host-port>
+#                (HOMEPAGE_VAR_HOST comes from DASHBOARD_HOST in .env).
+# - widget.url = address homepage polls. Stacks are separate compose projects
+#                with no shared network, so widgets also go through the
+#                host-published ports.
+# - container: = docker status dot + cpu/mem via the stack's socket proxy.
+# - Secrets are {{HOMEPAGE_VAR_*}} refs, injected from .env in docker-compose.yml.
+
+- Media:
+    - Sonarr:
+        icon: sonarr.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:8989"
+        description: TV automation
+        server: dockerproxy
+        container: sonarr
+        widget:
+          type: sonarr
+          url: "http://{{HOMEPAGE_VAR_HOST}}:8989"
+          key: "{{HOMEPAGE_VAR_SONARR_KEY}}"
+    - Radarr:
+        icon: radarr.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:7878"
+        description: Movie automation
+        server: dockerproxy
+        container: radarr
+        widget:
+          type: radarr
+          url: "http://{{HOMEPAGE_VAR_HOST}}:7878"
+          key: "{{HOMEPAGE_VAR_RADARR_KEY}}"
+    - Bazarr:
+        icon: bazarr.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:6767"
+        description: Subtitles
+        server: dockerproxy
+        container: bazarr
+    - NZBGet:
+        icon: nzbget.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:6789"
+        description: Usenet downloader
+        server: dockerproxy
+        container: nzbget
+
+- Downloads:
+    - qBittorrent:
+        icon: qbittorrent.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:8080"
+        description: Torrent client (via VPN)
+        server: dockerproxy
+        container: qbittorrent
+    - Prowlarr:
+        icon: prowlarr.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:9696"
+        description: Indexer manager
+        server: dockerproxy
+        container: prowlarr
+
+# Ops entries need the optional monitoring stack (uncomment it in the root
+# docker-compose.yml). Delete this group if you don't run it.
+- Ops:
+    - Grafana:
+        icon: grafana.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:3000"
+        description: Metrics & dashboards
+        server: dockerproxy
+        container: grafana
+    - Prometheus:
+        icon: prometheus.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:9090"
+        description: Metrics store
+        server: dockerproxy
+        container: prometheus
+        widget:
+          type: prometheus
+          url: "http://{{HOMEPAGE_VAR_HOST}}:9090"
