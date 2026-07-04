@@ -30,6 +30,10 @@ stack_conf() {
   if [ -f "$conf" ]; then
     local val
     val=$(grep "^${key}=" "$conf" 2>/dev/null | head -1 | cut -d= -f2-)
+    # Strip optional surrounding double quotes — the values are used in glob
+    # matches and eval'd commands, where literal quotes silently break both
+    val="${val%\"}"
+    val="${val#\"}"
     echo "${val:-$default}"
   else
     echo "$default"
