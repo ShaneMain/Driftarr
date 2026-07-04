@@ -42,6 +42,26 @@ from any device on the LAN — plus network-wide ad/tracker blocking.
   varies by client; for Mullvad set its custom DNS to your **gateway** IP
   (LAN-sharing on), and revert when leaving the LAN.
 
+## Health checks & auto-recovery
+
+Once the router points at this server, DNS is LAN-critical. Three layers ship
+with the stack (drill-tested: hard container stop → detected → restarted →
+recovered in ~80s, unattended):
+
+1. **Container healthcheck + autoheal label** — rewrite lookup inside the
+   container. Deliberately rewrite-only: an internet outage must not
+   restart-loop the container (local names keep working; restarts drop cache).
+2. **`dns-watchdog.sh`** (cron, every minute) — probes the real client path:
+   rewrite answer AND upstream via a random-label query (cache-proof).
+   Escalates: 2 fails → container restart, 4 → force-recreate, 6 → webhook
+   alert via `DEPLOY_NOTIFY_URL` (≤ every 15 min) + all-clear on recovery.
+   State in `~/.local/state/dns-watchdog/` (must be writable by the cron
+   user — `/var/lib` is not; this exact bug shipped once).
+3. **Prometheus metrics** (`adguard_rewrite_ok`, `adguard_upstream_ok`,
+   `adguard_watchdog_timestamp_seconds`) — written automatically if a
+   node-exporter textfile dir exists at `/var/lib/node-exporter`. Alert on
+   `== 0` and on a stale timestamp (dead watchdog) for an independent path.
+
 ## Going further
 
 - **Port-free names / HTTPS:** pair with a reverse proxy on `:80`/`:443`

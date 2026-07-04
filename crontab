@@ -4,3 +4,6 @@
 
 # ── Config export (pull live API state → git) — daily; commits only on change ──
 0 4 * * * /home/$USER/docker-stacks/configs/run-export.sh >> /home/$USER/config-export.log 2>&1
+
+# ── DNS watchdog: probe + auto-recover AdGuard (LAN-critical once router DHCP points here) ──
+* * * * * /home/$USER/docker-stacks/dns/dns-watchdog.sh
