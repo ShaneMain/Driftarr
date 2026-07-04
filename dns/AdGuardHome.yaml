@@ -1,0 +1,50 @@
+# First-boot seed config for AdGuard Home. __DNS_SERVER_IP__ is replaced with
+# $DNS_SERVER_IP at first container start; afterwards the live config lives in
+# the adguard_conf volume (see docker-compose.yml header).
+#
+# No users: = UI is open on the LAN. Add a user via the UI (or a bcrypt hash
+# here) if your network has untrusted clients.
+http:
+  address: 0.0.0.0:80
+
+users: []
+
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  # DoH by IP, deliberately — TWO field-tested reasons:
+  # 1. Hostname upstreams (https://dns.example/...) need a plain-DNS bootstrap
+  #    lookup. If your router intercepts outbound port 53 and forwards it back
+  #    to this server (common once DHCP hands out this DNS), the bootstrap
+  #    loops into AdGuard itself and upstream DNS dies on a cold start.
+  #    IP endpoints need no bootstrap; these certs carry IP SANs.
+  # 2. DoT (tls://... on 853) is blocked outbound by some routers/ISPs.
+  upstream_dns:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  bootstrap_dns:
+    - 1.1.1.1
+    - 8.8.8.8
+  cache_size: 4194304
+  cache_optimistic: true
+
+filtering:
+  protection_enabled: true
+  filtering_enabled: true
+  # Any *.home name resolves to your server: sonarr.home, radarr.home, ... work
+  # immediately for every host-published port (http://sonarr.home:8989). Pair
+  # with a reverse proxy on :80/:443 for port-free names and HTTPS.
+  rewrites:
+    - domain: home
+      answer: __DNS_SERVER_IP__
+    - domain: '*.home'
+      answer: __DNS_SERVER_IP__
+
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+
+schema_version: 28

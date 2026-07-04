@@ -4,4 +4,5 @@ include:
   - media/docker-compose.yml
   - downloads/docker-compose.yml
   - dashboard/docker-compose.yml
+  - dns/docker-compose.yml
   # - monitoring/docker-compose.yml

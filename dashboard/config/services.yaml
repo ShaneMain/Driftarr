@@ -59,6 +59,15 @@
 # Ops entries need the optional monitoring stack (uncomment it in the root
 # docker-compose.yml). Delete this group if you don't run it.
 - Ops:
+    - AdGuard Home:
+        icon: adguard-home.png
+        href: "http://{{HOMEPAGE_VAR_HOST}}:3005"
+        description: Local DNS + ad blocking
+        server: dockerproxy
+        container: adguard
+        widget:
+          type: adguard
+          url: "http://{{HOMEPAGE_VAR_HOST}}:3005"
     - Grafana:
         icon: grafana.png
         href: "http://{{HOMEPAGE_VAR_HOST}}:3000"

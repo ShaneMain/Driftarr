@@ -1,0 +1,48 @@
+# DNS — AdGuard Home: local DNS (*.home → your server) + network-wide ad
+# blocking. Point your router's DHCP DNS at this server to activate (README).
+#
+# Requires in .env:
+#   DNS_SERVER_IP — this server's LAN IP. Used to bind port 53 (binding the
+#                   specific IP coexists with systemd-resolved's loopback stub
+#                   on Fedora/Ubuntu — binding 0.0.0.0:53 would conflict) and
+#                   substituted into the seed config as the *.home answer.
+#
+# Config model: ./AdGuardHome.yaml is the FIRST-BOOT SEED (placeholder
+# __DNS_SERVER_IP__ substituted at first start). AdGuard writes UI changes
+# back to its config, so the live copy lives in the adguard_conf volume.
+# Force-reapply the seed: docker compose -p dns down -v && redeploy.
+services:
+  adguard:
+    extends:
+      file: ../common.yml
+      service: default
+    image: adguard/adguardhome:latest
+    container_name: adguard
+    ports:
+      - "${DNS_SERVER_IP}:53:53/udp"
+      - "${DNS_SERVER_IP}:53:53/tcp"
+      - "3005:80"
+    environment:
+      - DNS_SERVER_IP=${DNS_SERVER_IP}
+    volumes:
+      - ./AdGuardHome.yaml:/seed/AdGuardHome.yaml:ro
+      - adguard_conf:/opt/adguardhome/conf
+      - adguard_work:/opt/adguardhome/work
+    entrypoint:
+      - sh
+      - -c
+      - >
+        test -f /opt/adguardhome/conf/AdGuardHome.yaml
+        || sed "s/__DNS_SERVER_IP__/$$DNS_SERVER_IP/g" /seed/AdGuardHome.yaml
+        > /opt/adguardhome/conf/AdGuardHome.yaml;
+        exec /opt/adguardhome/AdGuardHome --no-check-update
+        -c /opt/adguardhome/conf/AdGuardHome.yaml -w /opt/adguardhome/work
+    healthcheck:
+      test: ["CMD-SHELL", "nslookup server.home 127.0.0.1 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  adguard_conf:
+  adguard_work:
