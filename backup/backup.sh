@@ -40,20 +40,28 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 cleanup() { rm -rf "$STAGE_DIR"; }
 trap cleanup EXIT
 
+umask 077  # transient DB dumps + .env are staged here; keep them owner-only
 mkdir -p "$STAGE_DIR"
 WORK="${STAGE_DIR}/work"
 mkdir -p "$WORK"
+FAILED=0  # a per-item snapshot failure sets this; we still finish + exit non-zero
 
 # ── Databases ────────────────────────────────────────────────────────────────
+# One bad DB spec must not abort the whole run (volumes + config still get
+# captured); drop any partial dump and record the failure.
 if [ -n "$DB_DUMPS" ]; then
   mkdir -p "$WORK/databases"
   for spec in $DB_DUMPS; do
     container="${spec%%:*}"; db="${spec#*:}"
     log "Dumping database ${db} from ${container}"
+    out="$WORK/databases/${container}-${db}.sql"
     # Uses the container's own MARIADB_ROOT_PASSWORD env; adjust for your image.
-    docker exec "$container" sh -c \
-      'exec mariadb-dump --single-transaction -u root -p"$MARIADB_ROOT_PASSWORD" '"$db" \
-      > "$WORK/databases/${container}-${db}.sql"
+    if ! docker exec "$container" sh -c \
+        'exec mariadb-dump --single-transaction -u root -p"$MARIADB_ROOT_PASSWORD" '"$db" \
+        > "$out"; then
+      log "WARNING: dump of ${db} from ${container} failed — dropping partial, continuing"
+      rm -f "$out"; FAILED=1
+    fi
   done
 fi
 
@@ -62,8 +70,11 @@ if [ -n "$VOLUMES" ]; then
   mkdir -p "$WORK/volumes"
   for vol in $VOLUMES; do
     log "Snapshotting volume ${vol}"
-    docker run --rm -v "${vol}:/src:ro" -v "$WORK/volumes:/dst" \
-      alpine sh -c "tar cf /dst/${vol}.tar -C /src ."
+    if ! docker run --rm -v "${vol}:/src:ro" -v "$WORK/volumes:/dst" \
+        alpine sh -c "tar cf /dst/${vol}.tar -C /src ."; then
+      log "WARNING: snapshot of volume ${vol} failed — dropping partial, continuing"
+      rm -f "$WORK/volumes/${vol}.tar"; FAILED=1
+    fi
   done
 fi
 
@@ -81,6 +92,14 @@ find "$STACKS_DIR" -maxdepth 3 -name docker-compose.yml \
   -exec cp --parents {} "$WORK/configs/" \; 2>/dev/null || true
 
 # ── Archive + upload ─────────────────────────────────────────────────────────
+# Refuse to upload a contentless archive. Prune runs only after a successful
+# upload, so shipping an empty archive would then age out older *good* ones and
+# you'd silently converge on empty backups.
+if [ -z "$(find "$WORK" -type f -print -quit)" ]; then
+  log "ERROR: nothing was staged (check STACKS_DIR / config) — not uploading, not pruning"
+  exit 1
+fi
+
 log "Compressing (zstd)"
 tar --zstd -cf "$ARCHIVE" -C "$WORK" .
 log "Archive: $(du -h "$ARCHIVE" | cut -f1)"
@@ -92,7 +111,8 @@ rclone copy "$ARCHIVE" "$REMOTE/" --progress
 log "Pruning remote: keep ${KEEP_DAILY_DAYS}d daily + Sundays up to ${KEEP_WEEKLY_DAYS}d"
 rclone lsf "$REMOTE/" --files-only | while read -r f; do
   date_str="${f#backup-}"; date_str="${date_str:0:8}"
-  [[ -z "$date_str" ]] && continue
+  # only touch our own YYYYMMDD-named archives; skip anything else safely
+  [[ "$date_str" =~ ^[0-9]{8}$ ]] || continue
   age_days=$(( ( $(date +%s) - $(date -d "$date_str" +%s) ) / 86400 ))
   dow=$(date -d "$date_str" +%u)  # 1=Mon..7=Sun
   if (( age_days > KEEP_WEEKLY_DAYS )); then
@@ -102,4 +122,8 @@ rclone lsf "$REMOTE/" --files-only | while read -r f; do
   fi
 done
 
+if [ "$FAILED" -ne 0 ]; then
+  log "Completed WITH ERRORS — one or more DB/volume snapshots were skipped (see above)."
+  exit 1
+fi
 log "Done."

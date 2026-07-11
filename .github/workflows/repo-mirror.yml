@@ -58,7 +58,8 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Upload bundle
+        env:
+          BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}  # via env, not inlined into the script
         run: |
-          gcloud storage cp repo.bundle \
-            "gs://${{ vars.BACKUP_BUCKET }}/repo-mirror/repo.bundle"
+          gcloud storage cp repo.bundle "gs://${BACKUP_BUCKET}/repo-mirror/repo.bundle"
           echo "Mirrored $(du -h repo.bundle | cut -f1) bundle to repo-mirror/"

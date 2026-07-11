@@ -69,8 +69,12 @@ gcloud storage buckets add-iam-policy-binding gs://YOUR-BUCKET \
   --member=serviceAccount:repo-mirror@YOUR-PROJECT.iam.gserviceaccount.com \
   --role=roles/storage.objectAdmin \
   --condition='title=repo-mirror-only,expression=resource.name.startsWith("projects/_/buckets/YOUR-BUCKET/objects/repo-mirror/")'
-# `gcloud storage cp` also needs bucket-wide list; grant a minimal custom role
-# (object list + bucket get only — no read/write/delete of objects):
+# `gcloud storage cp` fails without bucket-wide object list (verified: it lists the
+# destination before writing), so grant a minimal custom role — list + bucket.get
+# only, NO object read/write/delete. Residual exposure if this CI key leaks: it can
+# *enumerate* object names (which are crypt-encrypted hashes) but cannot read, write,
+# or delete anything outside repo-mirror/. That name-only metadata leak is acceptable;
+# for zero enumeration, upload via the JSON API (objects.insert) instead of `cp`.
 gcloud iam roles create repoMirrorList --project YOUR-PROJECT \
   --title "Repo mirror list" --stage GA \
   --permissions storage.objects.list,storage.buckets.get
@@ -114,7 +118,10 @@ managed `crontab` (a commented example is already there).
 ### Full rebuild on a new server
 
 1. Extract: `tar --zstd -xf ./restore/backup-*.tar.zst -C ./restore/extracted/`
-2. Place config files (`.env`, per-stack secret env files) back under your stacks dir.
+2. Place config files back under your stacks dir. Mind the archive layout under
+   `configs/`: `.env` is stored as `configs/env` (**rename it back to `.env`**);
+   extra secret files keep their relative path; compose files are nested under their
+   original absolute path (e.g. `configs/home/<user>/docker-stacks/.../docker-compose.yml`).
 3. Bring up the management/database stacks, then stop the apps you're about to restore.
 4. Restore each **volume**: `docker run --rm -v <vol>:/dst -v $PWD/restore/extracted/volumes:/src alpine sh -c 'tar xf /src/<vol>.tar -C /dst'`
 5. Restore each **database**: `docker exec -i <container> mariadb -u root -p"$PW" <db> < restore/extracted/databases/<container>-<db>.sql`
