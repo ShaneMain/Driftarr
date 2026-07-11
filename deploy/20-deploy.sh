@@ -65,6 +65,25 @@ deploy_stack() {
     fi
   fi
 
+  # Env preflight: every documented, no-default variable this stack references
+  # should be non-empty in the environment (sourced from .env). CI checks
+  # .env.example at PR time, but the server's real .env can drift from it.
+  # Advisory (warn, don't fail) — the health gate still catches a container
+  # that a genuinely-missing secret breaks, and this avoids blocking a deploy
+  # on a variable that is legitimately allowed to be empty.
+  if [ "$stack" != "root" ] && [ -f "$REPO_DIR/.env.example" ]; then
+    local _missing_env="" _v
+    while IFS= read -r _v; do
+      [ -z "$_v" ] && continue
+      grep -qE "^${_v}=" "$REPO_DIR/.env.example" || continue
+      [ -z "${!_v:-}" ] && _missing_env="$_missing_env $_v"
+    done < <(grep -hE '\$\{' "$REPO_DIR/$stack/docker-compose.yml" 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' \
+        | sed -E 's/\$\{([A-Z_][A-Z0-9_]*)\}/\1/' | sort -u)
+    [ -n "$_missing_env" ] && warn "Env vars documented in .env.example but unset/empty for $stack:$_missing_env"
+  fi
+
   # Snapshot before
   local before_state
   before_state=$(snapshot_containers "$stack")
