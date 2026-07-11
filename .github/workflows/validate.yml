@@ -68,6 +68,26 @@ jobs:
           fi
           echo "✅ .env.example documents all ${#vars[@]} no-default compose variables"
 
+      - name: Report memory budget
+        run: |
+          # Informational: sum declared mem_limits against HOST_MEM_MB (if set
+          # in .env.example) so every PR shows the memory ledger. Uncapped
+          # services don't appear here but can still OOM the host.
+          total=$(find . -name docker-compose.yml -print0 \
+            | xargs -0 grep -hE '^[[:space:]]*mem_limit:' 2>/dev/null \
+            | sed -E 's/.*mem_limit:[[:space:]]*"?([0-9]+)([mMgG]).*/\1 \2/' \
+            | awk '{ if (tolower($2)=="g") s+=$1*1024; else s+=$1 } END { print s+0 }')
+          capped=$(find . -name docker-compose.yml -print0 \
+            | xargs -0 grep -hcE '^[[:space:]]*mem_limit:' 2>/dev/null | awk '{s+=$1} END{print s+0}')
+          echo "Declared mem_limit: ${capped} services, ${total} MB total"
+          host_mb=$(grep -E '^HOST_MEM_MB=' .env.example 2>/dev/null | cut -d= -f2)
+          if [ -n "$host_mb" ] && [ "$host_mb" -gt 0 ] 2>/dev/null; then
+            echo "Host memory (HOST_MEM_MB): ${host_mb} MB"
+            if [ "$total" -gt "$host_mb" ]; then
+              echo "::warning::declared mem_limit total (${total} MB) exceeds HOST_MEM_MB (${host_mb} MB)"
+            fi
+          fi
+
       - name: Validate shell script syntax
         run: |
           # Every tracked shell script, not just deploy/ — pre-deploy hooks and
