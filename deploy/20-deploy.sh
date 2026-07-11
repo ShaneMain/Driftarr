@@ -236,6 +236,14 @@ rollback_stack() {
 
   warn "Rolling back $stack to ${BEFORE:0:7}..."
 
+  # Preserve any EXIT handler already installed by the entrypoint (e.g. the
+  # deploy-failure notifier). The safety trap below and its teardown must
+  # restore it, not clear it — otherwise a run that rolls back disarms the
+  # notifier and every subsequent failure (including 90-summary's exit 1) goes
+  # unreported.
+  local prev_exit_trap
+  prev_exit_trap=$(trap -p EXIT)
+
   trap 'git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true; trap - EXIT' EXIT
 
   git checkout "$BEFORE" -- "$stack/" 2>/dev/null || git checkout "$BEFORE" -- "$stack" 2>/dev/null || true
@@ -253,7 +261,7 @@ rollback_stack() {
   _recover_created_containers "$stack"
 
   git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true
-  trap - EXIT
+  eval "${prev_exit_trap:-trap - EXIT}"
 
   ROLLED_BACK="$ROLLED_BACK $stack"
   warn "$stack rolled back to ${BEFORE:0:7}"
