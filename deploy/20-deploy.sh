@@ -285,7 +285,10 @@ for stack in $STACKS; do
   else
     FAILED="$FAILED $stack"
     err "$stack deploy failed — initiating rollback"
-    rollback_stack "$stack"
+    # Tolerate a failing rollback: rollback_stack is a plain call, so with
+    # errexit active a failed checkout/build/up inside it would abort the whole
+    # loop, skipping every remaining stack and 90-summary. Log and continue.
+    rollback_stack "$stack" || err "rollback of $stack failed — continuing with remaining stacks"
   fi
   sep
 done
