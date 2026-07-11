@@ -107,7 +107,12 @@ for stack in $STACKS; do
     [ "$matched" = false ] && all_reloadable=false
   done <<< "$CHANGED"
   if [ "$stack_changed" = true ] && [ "$all_reloadable" = true ]; then
-    STACKS=$(echo "$STACKS" | tr ' ' '\n' | grep -v "^${stack}$" | tr '\n' ' ' | xargs)
+    # `grep -v` exits 1 when it filters out the LAST remaining stack (a commit
+    # touching only hot-reloadable files, e.g. a lone Caddyfile). Under the
+    # sourced `set -euo pipefail`, that non-zero pipeline would fail the
+    # assignment and abort the whole deploy. Swallow grep's no-match status so
+    # STACKS can legitimately become empty.
+    STACKS=$(echo "$STACKS" | tr ' ' '\n' | { grep -v "^${stack}$" || true; } | tr '\n' ' ' | xargs)
   fi
 done
 
