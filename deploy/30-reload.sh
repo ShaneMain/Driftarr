@@ -27,10 +27,15 @@ fi
 # ── stack.conf-driven hot-reloads ─────────────────────
 # For stacks with STACK_HOT_RELOAD_CMD, check if any of their
 # STACK_HOT_RELOAD_PATTERNS matched changed files and run the command.
+RELOADED_STACKS=""
 while IFS= read -r file; do
   [ -z "$file" ] && continue
   dir=$(echo "$file" | cut -d/ -f1)
   [ -f "$REPO_DIR/$dir/stack.conf" ] || continue
+
+  # Reload each stack at most once, even if several of its files changed —
+  # without breaking out of the loop over the OTHER stacks' changed files.
+  case " $RELOADED_STACKS " in *" $dir "*) continue ;; esac
 
   reload_cmd=$(stack_hot_reload_cmd "$dir")
   [ -z "$reload_cmd" ] && continue
@@ -44,14 +49,20 @@ while IFS= read -r file; do
     case "$rel_path" in
       $pattern)
         info "Hot-reloading $dir ($rel_path matched)..."
+        RELOADED_STACKS="$RELOADED_STACKS $dir"
         if eval "$reload_cmd" 2>/dev/null; then
           ok "$dir config reloaded"
           CONFIG_RELOADS="$CONFIG_RELOADS $dir"
+          # Record the applied state so drift detection doesn't force a full
+          # restart of this stack on the next deploy (the reloaded files are
+          # part of stack_file_hash).
+          if [ -n "${DEPLOY_HASHES_DIR:-}" ]; then
+            stack_file_hash "$REPO_DIR/$dir" > "$DEPLOY_HASHES_DIR/$dir"
+          fi
         else
           warn "$dir reload failed"
         fi
-        # Only reload once per stack even if multiple files matched
-        break 2
+        break
         ;;
     esac
   done
