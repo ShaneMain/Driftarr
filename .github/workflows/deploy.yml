@@ -21,6 +21,11 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 
+# Least privilege: deploy reaches the server over Tailscale/SSH and uses no
+# GITHUB_TOKEN write scopes.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest

@@ -205,7 +205,7 @@ class AppModule:
     # write_config, then call reconcile_destructive(desired) to apply the
     # merge-before-write invariant.
     #
-    # See driftarr-spec/config-sync-engine.md § Core Principles.
+    # This is the merge-before-write invariant of the config-sync design.
 
     SENSITIVE_KEY_PATTERNS = ("password", "secret", "token", "apikey", "api_key")
 

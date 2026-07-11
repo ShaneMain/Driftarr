@@ -8,6 +8,10 @@ on:
       - 'configs/data/**'
   pull_request:
 
+# Least privilege: this workflow only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -17,6 +21,14 @@ jobs:
       - name: Validate compose files
         run: |
           for f in $(find . -name 'docker-compose.yml'); do
+            dir=$(dirname "$f")
+            # A stack may reference an env_file that is gitignored (server-only
+            # secrets, e.g. plane.env). `config` needs the file to exist to
+            # parse, so create an empty stub by basename in the stack dir.
+            for ef in $(grep -oE '[A-Za-z0-9._/-]+\.env\b' "$f" | grep -v '\.env\.example$' || true); do
+              base=$(basename "$ef")
+              [ -f "$dir/$base" ] || : > "$dir/$base"
+            done
             echo "Validating $f..."
             docker compose -f "$f" --env-file .env.example config --quiet
           done
@@ -42,13 +54,83 @@ jobs:
             echo "✅ All services define healthchecks"
           fi
 
-      - name: Validate deploy scripts
+      - name: Check .env.example documents all compose variables
         run: |
-          bash -n deploy.sh
-          for f in deploy/*.sh; do
-            [ -f "$f" ] && bash -n "$f" && echo "  ✅ $f"
+          # A ${VAR} with no default interpolates to empty when unset — compose
+          # only warns. Validation above runs against .env.example, so a
+          # referenced variable that is absent from it silently validates and
+          # would deploy a container with an empty secret/path. Require the
+          # template to document every no-default variable.
+          mapfile -t vars < <(find . -name docker-compose.yml -print0 \
+            | xargs -0 grep -hE '\$\{' 2>/dev/null \
+            | grep -vE '^[[:space:]]*#' \
+            | grep -oE '\$\{[A-Z_][A-Z0-9_]*(\}|:\?[^}]*\})' \
+            | sed -E 's/\$\{([A-Z_][A-Z0-9_]*).*/\1/' | sort -u)
+          missing=""
+          for v in "${vars[@]}"; do
+            grep -qE "^${v}=" .env.example || missing="$missing $v"
           done
-          echo "✅ All deploy scripts syntax OK"
+          if [ -n "$missing" ]; then
+            echo "::error::compose variables with no default are missing from .env.example:$missing"
+            exit 1
+          fi
+          echo "✅ .env.example documents all ${#vars[@]} no-default compose variables"
+
+      - name: Report memory budget
+        run: |
+          # Informational: sum declared mem_limits against HOST_MEM_MB (if set
+          # in .env.example) so every PR shows the memory ledger. Uncapped
+          # services don't appear here but can still OOM the host.
+          total=$(find . -name docker-compose.yml -print0 \
+            | xargs -0 grep -hE '^[[:space:]]*mem_limit:' 2>/dev/null \
+            | sed -E 's/.*mem_limit:[[:space:]]*"?([0-9]+)([mMgG]).*/\1 \2/' \
+            | awk '{ if (tolower($2)=="g") s+=$1*1024; else s+=$1 } END { print s+0 }')
+          capped=$(find . -name docker-compose.yml -print0 \
+            | xargs -0 grep -hcE '^[[:space:]]*mem_limit:' 2>/dev/null | awk '{s+=$1} END{print s+0}')
+          echo "Declared mem_limit: ${capped} services, ${total} MB total"
+          host_mb=$(grep -E '^HOST_MEM_MB=' .env.example 2>/dev/null | cut -d= -f2)
+          if [ -n "$host_mb" ] && [ "$host_mb" -gt 0 ] 2>/dev/null; then
+            echo "Host memory (HOST_MEM_MB): ${host_mb} MB"
+            if [ "$total" -gt "$host_mb" ]; then
+              echo "::warning::declared mem_limit total (${total} MB) exceeds HOST_MEM_MB (${host_mb} MB)"
+            fi
+          fi
+
+      - name: Validate shell script syntax
+        run: |
+          # Every tracked shell script, not just deploy/ — pre-deploy hooks and
+          # cron-invoked scripts were previously unchecked.
+          while read -r f; do
+            bash -n "$f" && echo "  ✅ $f"
+          done < <(git ls-files -- '*.sh')
+          echo "✅ All shell scripts syntax OK"
+
+      - name: Check script executable bits
+        run: |
+          # A script that a cron job or a deploy hook invokes but that is 644 in
+          # the index reproduces a broken file on every checkout — it fails with
+          # "Permission denied" and its whole job silently stops working. Fail
+          # here so that never reaches the server.
+          crontab_refs=""
+          [ -f crontab ] && crontab_refs=$(cat crontab)
+          rc=0
+          while read -r mode _hash _stage path; do
+            need_exec=0
+            case "$path" in
+              *pre-deploy.sh|*post-deploy.sh) need_exec=1 ;;
+              *)
+                if [ -n "$crontab_refs" ] && printf '%s' "$crontab_refs" | grep -qF -- "$path"; then
+                  need_exec=1
+                fi
+                ;;
+            esac
+            if [ "$need_exec" = 1 ] && [ "$mode" != 100755 ]; then
+              echo "::error::$path is mode $mode in the index but must be executable (100755)"
+              rc=1
+            fi
+          done < <(git ls-files -s -- '*.sh')
+          [ "$rc" = 0 ] && echo "✅ script executable bits OK"
+          exit $rc
 
       - name: Validate Python syntax
         run: |
@@ -59,6 +141,21 @@ jobs:
             [ -f "$f" ] && python3 -m py_compile "$f"
           done
           echo "✅ Python syntax OK"
+
+      - name: Run config-sync engine tests
+        run: |
+          # The sync engine performs destructive live-API writes (a missing
+          # collection file means delete-all), so a logic regression must not
+          # reach a deploy just because the sources still compile.
+          [ -d tests ] || { echo "no tests/ directory — skipping"; exit 0; }
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tests/ -q
+
+      - name: Run deploy pipeline tests (bats)
+        run: |
+          [ -d tests/deploy ] || { echo "no tests/deploy — skipping"; exit 0; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq bats
+          bats tests/deploy/
 
       - name: Check file structure
         run: |

@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Keep third-party GitHub Actions current so pinning them to a specific
+  # version/SHA can be maintained instead of drifting on a floating major tag.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

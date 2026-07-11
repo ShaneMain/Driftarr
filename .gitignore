@@ -6,3 +6,6 @@
 __pycache__/
 *.pyc
 .deploy-hashes/
+.deploy.lock
+.deploy-log
+.last-deployed

@@ -65,6 +65,25 @@ deploy_stack() {
     fi
   fi
 
+  # Env preflight: every documented, no-default variable this stack references
+  # should be non-empty in the environment (sourced from .env). CI checks
+  # .env.example at PR time, but the server's real .env can drift from it.
+  # Advisory (warn, don't fail) — the health gate still catches a container
+  # that a genuinely-missing secret breaks, and this avoids blocking a deploy
+  # on a variable that is legitimately allowed to be empty.
+  if [ "$stack" != "root" ] && [ -f "$REPO_DIR/.env.example" ]; then
+    local _missing_env="" _v
+    while IFS= read -r _v; do
+      [ -z "$_v" ] && continue
+      grep -qE "^${_v}=" "$REPO_DIR/.env.example" || continue
+      [ -z "${!_v:-}" ] && _missing_env="$_missing_env $_v"
+    done < <(grep -hE '\$\{' "$REPO_DIR/$stack/docker-compose.yml" 2>/dev/null \
+        | grep -vE '^[[:space:]]*#' \
+        | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' \
+        | sed -E 's/\$\{([A-Z_][A-Z0-9_]*)\}/\1/' | sort -u)
+    [ -n "$_missing_env" ] && warn "Env vars documented in .env.example but unset/empty for $stack:$_missing_env"
+  fi
+
   # Snapshot before
   local before_state
   before_state=$(snapshot_containers "$stack")
@@ -91,18 +110,34 @@ deploy_stack() {
     [ "$pull_ok" = true ] || warn "Pre-pull failed after 3 attempts — proceeding with cached images"
   fi
 
+  # Capture docker's own exit status via PIPESTATUS[0] (the pipeline ends in
+  # `tail`, and deploy_stack runs with errexit suppressed because it's called
+  # as an `if` condition — so a failed `up`/`build` would otherwise fall
+  # straight through to the health gate and, if old containers are still up or
+  # nothing was created, be recorded as SUCCESS).
+  local up_rc=0
   if [ "$stack" = "root" ]; then
     # Legacy path — 10-detect.sh now expands root compose changes into
     # per-stack deploys, so this only runs if "root" is passed explicitly.
     log "Root compose changed — updating all services"
     docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    up_rc=${PIPESTATUS[0]}
   elif needs_build "$stack"; then
     log "Building $stack images..."
     compose_cmd "$stack" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
-    log "Starting $stack..."
-    compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    up_rc=${PIPESTATUS[0]}
+    if [ "$up_rc" -eq 0 ]; then
+      log "Starting $stack..."
+      compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+      up_rc=${PIPESTATUS[0]}
+    fi
   else
     compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    up_rc=${PIPESTATUS[0]}
+  fi
+  if [ "$up_rc" -ne 0 ]; then
+    warn "compose build/up failed for $stack (exit $up_rc) — treating as deploy failure"
+    return 1
   fi
 
   # Recover from static-IP recreation race
@@ -149,6 +184,14 @@ deploy_stack() {
   if [ -n "$after_state" ]; then
     log "After:"
     echo "$after_state" | while read -r line; do log "  $line"; done
+  fi
+
+  # A non-root stack with zero containers after `up` means the compose produced
+  # nothing (interpolation error, missing external network, ...). The grep-based
+  # health gate below passes vacuously on empty input, so guard it explicitly.
+  if [ "$stack" != "root" ] && [ -z "$after_state" ]; then
+    warn "No containers found for $stack after deploy — nothing was created"
+    return 1
   fi
 
   # Health checks
@@ -212,6 +255,14 @@ rollback_stack() {
 
   warn "Rolling back $stack to ${BEFORE:0:7}..."
 
+  # Preserve any EXIT handler already installed by the entrypoint (e.g. the
+  # deploy-failure notifier). The safety trap below and its teardown must
+  # restore it, not clear it — otherwise a run that rolls back disarms the
+  # notifier and every subsequent failure (including 90-summary's exit 1) goes
+  # unreported.
+  local prev_exit_trap
+  prev_exit_trap=$(trap -p EXIT)
+
   trap 'git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true; trap - EXIT' EXIT
 
   git checkout "$BEFORE" -- "$stack/" 2>/dev/null || git checkout "$BEFORE" -- "$stack" 2>/dev/null || true
@@ -229,7 +280,7 @@ rollback_stack() {
   _recover_created_containers "$stack"
 
   git checkout "$AFTER" -- "$stack/" 2>/dev/null || git checkout "$AFTER" -- "$stack" 2>/dev/null || true
-  trap - EXIT
+  eval "${prev_exit_trap:-trap - EXIT}"
 
   ROLLED_BACK="$ROLLED_BACK $stack"
   warn "$stack rolled back to ${BEFORE:0:7}"
@@ -253,7 +304,10 @@ for stack in $STACKS; do
   else
     FAILED="$FAILED $stack"
     err "$stack deploy failed — initiating rollback"
-    rollback_stack "$stack"
+    # Tolerate a failing rollback: rollback_stack is a plain call, so with
+    # errexit active a failed checkout/build/up inside it would abort the whole
+    # loop, skipping every remaining stack and 90-summary. Log and continue.
+    rollback_stack "$stack" || err "rollback of $stack failed — continuing with remaining stacks"
   fi
   sep
 done

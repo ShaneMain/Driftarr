@@ -23,6 +23,17 @@ fi
 if [ -n "$ROLLED_BACK" ]; then
   warn "Rolled back:$ROLLED_BACK"
 fi
+
+# Persistent audit trail (survives journald rotation): one line per run and the
+# SHA the pipeline last processed. Server-local state (gitignored). Written
+# before the failure exit so failed runs are recorded too.
+_outcome="SUCCEEDED"
+[ -n "$ROLLED_BACK" ] && _outcome="ROLLED_BACK"
+[ -n "$FAILED" ] && _outcome="FAILED"
+printf '%s\t%s..%s\t%s\n' "$(date -Is 2>/dev/null || date)" "${BEFORE:0:7}" "${AFTER:0:7}" "$_outcome" \
+  >> "$REPO_DIR/.deploy-log" 2>/dev/null || true
+printf '%s\n' "$AFTER" > "$REPO_DIR/.last-deployed" 2>/dev/null || true
+
 if [ -n "$FAILED" ]; then
   err "Failed:$FAILED"
   exit 1
