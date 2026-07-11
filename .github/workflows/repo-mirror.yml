@@ -1,0 +1,64 @@
+name: Mirror repo to backup bucket
+
+# Optional disaster-recovery mirror. Pushes a full `git bundle` of this repo into
+# a Google Cloud Storage bucket on every push, so you can rebuild the repo even if
+# your git host is unreachable. Pairs with backup/backup-and-recovery.md.
+#
+# The job no-ops until you configure it — nothing happens unless BACKUP_BUCKET is
+# set. To enable:
+#   1. Create a private GCS bucket and a service account whose key can write ONLY
+#      the `repo-mirror/` prefix. IMPORTANT: do NOT give this key access to your
+#      data-backup objects — a leaked CI secret must not be able to read or delete
+#      your backups. The scoped-service-account recipe is in
+#      backup/backup-and-recovery.md.
+#   2. Repo -> Settings -> Secrets and variables -> Actions:
+#        Variable  BACKUP_BUCKET = your-bucket-name
+#        Secret    GCS_SA_KEY    = the scoped service-account JSON key
+#
+# Stored raw (not client-side encrypted) on purpose: commit only already-encrypted
+# secrets to the repo, so the bundle carries nothing sensitive in cleartext. Keep
+# the bucket private regardless.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 0'  # weekly safety net (Sun 06:00 UTC) in case a push is missed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-mirror
+  cancel-in-progress: true
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: vars.BACKUP_BUCKET != ''  # skip entirely until configured
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # a complete bundle needs all refs/history
+
+      - name: Create bundle
+        run: git bundle create repo.bundle --all
+
+      - name: Verify bundle is self-contained
+        run: git bundle verify repo.bundle
+
+      - name: Authenticate to GCS
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCS_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload bundle
+        run: |
+          gcloud storage cp repo.bundle \
+            "gs://${{ vars.BACKUP_BUCKET }}/repo-mirror/repo.bundle"
+          echo "Mirrored $(du -h repo.bundle | cut -f1) bundle to repo-mirror/"
