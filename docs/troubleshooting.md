@@ -102,8 +102,15 @@ docker system prune -af --volumes
 
 ### Services can't reach each other
 
-All media services share the `shared` Docker network with static IPs. Verify the network exists and services are attached:
+Each stack runs as its own Compose project, so its services share that
+project's default network and reach one another by service name. Verify a
+stack's network and attachments:
 
 ```bash
-docker network inspect shared
+docker compose -p <stack> ps
+docker network inspect <stack>_default
 ```
+
+Services in *different* stacks are not on the same network by default — reach
+those over the host (published ports) or add a shared external network (see
+`deploy/05-networks.sh` and `networks.conf`).
