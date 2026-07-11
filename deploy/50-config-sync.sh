@@ -37,7 +37,7 @@ docker compose -p "$CONFIG_SYNC_STACK" -f "$REPO_DIR/$CONFIG_SYNC_STACK/docker-c
 # (REACHABILITY_ATTEMPTS × (WAIT + BACKOFF) ≈ 5 min at today's defaults)
 # plus handshake + module work. 10 min covers it with headroom.
 #
-# See driftarr-spec/config-sync-engine.md §Core Principles #6.
+# (Config-sync is end-to-end or it fails: a timeout is a deploy failure.)
 CONFIG_SYNC_TIMEOUT="${CONFIG_SYNC_TIMEOUT:-600}"
 log "Waiting up to ${CONFIG_SYNC_TIMEOUT}s for config-sync to finish..."
 if exit_code=$(timeout "$CONFIG_SYNC_TIMEOUT" docker wait config-sync 2>/dev/null) && [ -n "$exit_code" ]; then
