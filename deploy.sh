@@ -23,6 +23,17 @@ CONFIG_SYNC_STACK="${DEPLOY_CONFIG_SYNC_STACK:-media}"
 
 cd "$REPO_DIR"
 
+# ── Single-deploy lock ────────────────────────────────
+# Stop two deploys from interleaving git pull, autostash, and the rollback
+# checkout window. GitHub's concurrency group only serializes Actions runs, not
+# an Actions run racing a manual server-side deploy. flock releases the fd
+# automatically on any exit (including SIGKILL), so there is no stale lock.
+exec 9>"$REPO_DIR/.deploy.lock"
+if ! flock -n 9; then
+  echo "⚠️  Another deploy is already in progress ($REPO_DIR/.deploy.lock) — aborting." >&2
+  exit 1
+fi
+
 # ── Failure notification (optional) ───────────────────
 # Set DEPLOY_NOTIFY_URL to a webhook that accepts {"title","message"} JSON
 # (ntfy, Gotify, a Signal relay, ...) to get alerted when a deploy fails.
