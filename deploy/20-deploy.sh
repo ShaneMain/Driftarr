@@ -91,18 +91,34 @@ deploy_stack() {
     [ "$pull_ok" = true ] || warn "Pre-pull failed after 3 attempts — proceeding with cached images"
   fi
 
+  # Capture docker's own exit status via PIPESTATUS[0] (the pipeline ends in
+  # `tail`, and deploy_stack runs with errexit suppressed because it's called
+  # as an `if` condition — so a failed `up`/`build` would otherwise fall
+  # straight through to the health gate and, if old containers are still up or
+  # nothing was created, be recorded as SUCCESS).
+  local up_rc=0
   if [ "$stack" = "root" ]; then
     # Legacy path — 10-detect.sh now expands root compose changes into
     # per-stack deploys, so this only runs if "root" is passed explicitly.
     log "Root compose changed — updating all services"
     docker compose up -d 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    up_rc=${PIPESTATUS[0]}
   elif needs_build "$stack"; then
     log "Building $stack images..."
     compose_cmd "$stack" build 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -10
-    log "Starting $stack..."
-    compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    up_rc=${PIPESTATUS[0]}
+    if [ "$up_rc" -eq 0 ]; then
+      log "Starting $stack..."
+      compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+      up_rc=${PIPESTATUS[0]}
+    fi
   else
     compose_cmd "$stack" up -d --remove-orphans 2>&1 | tee -a >(logger -t "$LOG_TAG") | tail -20
+    up_rc=${PIPESTATUS[0]}
+  fi
+  if [ "$up_rc" -ne 0 ]; then
+    warn "compose build/up failed for $stack (exit $up_rc) — treating as deploy failure"
+    return 1
   fi
 
   # Recover from static-IP recreation race
@@ -149,6 +165,14 @@ deploy_stack() {
   if [ -n "$after_state" ]; then
     log "After:"
     echo "$after_state" | while read -r line; do log "  $line"; done
+  fi
+
+  # A non-root stack with zero containers after `up` means the compose produced
+  # nothing (interpolation error, missing external network, ...). The grep-based
+  # health gate below passes vacuously on empty input, so guard it explicitly.
+  if [ "$stack" != "root" ] && [ -z "$after_state" ]; then
+    warn "No containers found for $stack after deploy — nothing was created"
+    return 1
   fi
 
   # Health checks
