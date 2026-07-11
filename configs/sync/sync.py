@@ -15,8 +15,8 @@ become reachable, or whose sync() raises, fail the whole run (exit 1).
 Modules without declared data (empty data_dir) are optional and skipping
 them is fine — nothing was asked of them.
 
-See driftarr-spec/config-sync-engine.md §Core Principles #6 (Deploy is
-end-to-end or it fails).
+This upholds the deploy-is-end-to-end-or-it-fails principle: a partial
+sync is treated as a failure, not a success.
 """
 
 import importlib
