@@ -60,6 +60,15 @@ jobs:
           done
           echo "✅ Python syntax OK"
 
+      - name: Run config-sync engine tests
+        run: |
+          # The sync engine performs destructive live-API writes (a missing
+          # collection file means delete-all), so a logic regression must not
+          # reach a deploy just because the sources still compile.
+          [ -d tests ] || { echo "no tests/ directory — skipping"; exit 0; }
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tests/ -q
+
       - name: Check file structure
         run: |
           echo "Checking required files..."
