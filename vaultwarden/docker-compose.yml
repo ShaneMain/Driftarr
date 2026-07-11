@@ -1,0 +1,49 @@
+# Vaultwarden — self-hosted, Bitwarden-compatible password manager
+# (github.com/dani-garcia/vaultwarden).
+#
+# This is the canonical "irreplaceable data" stack. Unlike the media/downloads
+# stacks — whose contents are re-acquirable — the vaultwarden_data volume holds
+# your only copy of your passwords. If you enable this stack, enable off-site
+# backups too: the backup example in .env.example is pre-wired for this volume.
+# See backup/backup-and-recovery.md for the full backup + disaster-recovery model.
+#
+# Opt-in: uncomment its line in the root docker-compose.yml (or deploy the stack
+# directly). Auto-discovered by the deploy pipeline like any other stack.
+#
+# Requires in .env:
+#   VAULTWARDEN_DOMAIN — full external URL you reach it at, e.g.
+#                        https://vault.example.com. Needed for WebAuthn/2FA,
+#                        attachments, and push notifications. A LAN-only
+#                        http://<host>:<port> value works with reduced features.
+# Optional in .env:
+#   VAULTWARDEN_PORT            — host port (default 8222)
+#   VAULTWARDEN_SIGNUPS_ALLOWED — default false. Set true for first run to create
+#                                 your account, then set back to false and redeploy.
+#   VAULTWARDEN_ADMIN_TOKEN     — enables the /admin panel when set. Generate a
+#                                 hashed token: `docker run --rm vaultwarden/server
+#                                 /vaultwarden hash`.
+#
+# Production note: front it with a reverse proxy + TLS and set VAULTWARDEN_DOMAIN
+# to the https URL — Vaultwarden needs HTTPS for full functionality.
+services:
+  vaultwarden:
+    extends:
+      file: ../common.yml
+      service: default
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    ports:
+      - "${VAULTWARDEN_PORT:-8222}:80"
+    environment:
+      - DOMAIN=${VAULTWARDEN_DOMAIN:-http://localhost:8222}
+      - SIGNUPS_ALLOWED=${VAULTWARDEN_SIGNUPS_ALLOWED:-false}
+      - ADMIN_TOKEN=${VAULTWARDEN_ADMIN_TOKEN:-}
+      - ROCKET_PORT=80
+    volumes:
+      - vaultwarden_data:/data
+    # No healthcheck: the vaultwarden/server image ships no curl/wget, so an HTTP
+    # probe can't run in-container. Liveness relies on restart: unless-stopped
+    # (from common.yml). Add a proxy-level health probe in production if desired.
+
+volumes:
+  vaultwarden_data:
