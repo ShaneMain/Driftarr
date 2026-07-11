@@ -21,6 +21,14 @@ jobs:
       - name: Validate compose files
         run: |
           for f in $(find . -name 'docker-compose.yml'); do
+            dir=$(dirname "$f")
+            # A stack may reference an env_file that is gitignored (server-only
+            # secrets, e.g. plane.env). `config` needs the file to exist to
+            # parse, so create an empty stub by basename in the stack dir.
+            for ef in $(grep -oE '[A-Za-z0-9._/-]+\.env\b' "$f" | grep -v '\.env\.example$' || true); do
+              base=$(basename "$ef")
+              [ -f "$dir/$base" ] || : > "$dir/$base"
+            done
             echo "Validating $f..."
             docker compose -f "$f" --env-file .env.example config --quiet
           done
