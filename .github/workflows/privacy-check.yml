@@ -1,0 +1,73 @@
+name: Privacy Check
+
+# Public-repo hygiene. This template is published, so private-infrastructure
+# identifiers — the operator's downstream instance, its hosts, domains, tunnels
+# and accounts — must never appear in tracked files or commit messages. This
+# job fails the build if any do, catching an accidental leak at PR time instead
+# of after it is public and fetchable by SHA forever.
+#
+# This workflow is repo-specific (NOT in the shared parity set): the same check
+# in the private repo would flag its own legitimate content.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan tracked files and commit messages for private identifiers
+        run: |
+          # Case-insensitive. Keep patterns to unambiguous private proper nouns
+          # and domains so example LAN IPs and the public org name (ShaneMain)
+          # do not false-positive. Extend as new private names are introduced.
+          patterns=(
+            'trident'
+            'eldritch'
+            'shanema\.in'
+            'weken'
+            'krakenskeg'
+            'jc@'
+            'parity mirror'
+          )
+          self='.github/workflows/privacy-check.yml'
+          rc=0
+
+          for p in "${patterns[@]}"; do
+            # Search tracked file contents, excluding this workflow (it lists the
+            # patterns, which would otherwise match themselves).
+            if git grep -I -i -n -e "$p" -- . ":(exclude)$self" > /tmp/hits 2>/dev/null; then
+              echo "::error::private identifier '$p' found in tracked files:"
+              cat /tmp/hits
+              rc=1
+            fi
+          done
+
+          # Commit messages introduced by this push / PR.
+          case "${{ github.event_name }}" in
+            pull_request) range='${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}' ;;
+            push)         range='${{ github.event.before }}..${{ github.event.after }}' ;;
+            *)            range='' ;;
+          esac
+          if [ -n "$range" ] && git rev-parse "${range%%..*}" >/dev/null 2>&1; then
+            msgs=$(git log --format='%H %s%n%b' "$range")
+            for p in "${patterns[@]}"; do
+              if printf '%s\n' "$msgs" | grep -I -i -n -e "$p" > /tmp/mhits 2>/dev/null; then
+                echo "::error::private identifier '$p' found in commit messages:"
+                cat /tmp/mhits
+                rc=1
+              fi
+            done
+          fi
+
+          if [ "$rc" = 0 ]; then echo "✅ no private identifiers found"; fi
+          exit $rc
