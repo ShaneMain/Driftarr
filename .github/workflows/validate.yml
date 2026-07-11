@@ -42,6 +42,28 @@ jobs:
             echo "✅ All services define healthchecks"
           fi
 
+      - name: Check .env.example documents all compose variables
+        run: |
+          # A ${VAR} with no default interpolates to empty when unset — compose
+          # only warns. Validation above runs against .env.example, so a
+          # referenced variable that is absent from it silently validates and
+          # would deploy a container with an empty secret/path. Require the
+          # template to document every no-default variable.
+          mapfile -t vars < <(find . -name docker-compose.yml -print0 \
+            | xargs -0 grep -hE '\$\{' 2>/dev/null \
+            | grep -vE '^[[:space:]]*#' \
+            | grep -oE '\$\{[A-Z_][A-Z0-9_]*(\}|:\?[^}]*\})' \
+            | sed -E 's/\$\{([A-Z_][A-Z0-9_]*).*/\1/' | sort -u)
+          missing=""
+          for v in "${vars[@]}"; do
+            grep -qE "^${v}=" .env.example || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::compose variables with no default are missing from .env.example:$missing"
+            exit 1
+          fi
+          echo "✅ .env.example documents all ${#vars[@]} no-default compose variables"
+
       - name: Validate shell script syntax
         run: |
           # Every tracked shell script, not just deploy/ — pre-deploy hooks and
