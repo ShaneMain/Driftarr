@@ -843,30 +843,28 @@ SSHDEOF
 
   if confirm "Start all stacks now?"; then
     info "Starting..."
-    if [ "$SKIP_DOWNLOADS" = true ]; then
-      # Start stacks individually, skipping downloads
-      for dir in "$REPO_DIR"/*/; do
-        if [ -f "$dir/docker-compose.yml" ]; then
-          stack_name=$(basename "$dir")
-          if [ "$stack_name" = "downloads" ]; then
-            warn "Skipping downloads stack (VPN not configured)"
-            continue
-          fi
-          info "Starting $stack_name..."
-          docker compose -f "$dir/docker-compose.yml" up -d 2>&1 || warn "$stack_name failed to start"
-        fi
-      done
-    else
-      docker compose -f "$REPO_DIR/docker-compose.yml" up -d 2>&1
-    fi
+    # Start each stack as its own Compose project (-p <stack>), matching how the
+    # deploy pipeline runs them. A single root-project `up` would claim the same
+    # container_names under a different project name, so the first GitOps deploy
+    # would then fail with "name already in use".
+    for dir in "$REPO_DIR"/*/; do
+      [ -f "$dir/docker-compose.yml" ] || continue
+      stack_name=$(basename "$dir")
+      if [ "$SKIP_DOWNLOADS" = true ] && [ "$stack_name" = "downloads" ]; then
+        warn "Skipping downloads stack (VPN not configured)"
+        continue
+      fi
+      info "Starting $stack_name..."
+      docker compose -p "$stack_name" -f "$dir/docker-compose.yml" up -d 2>&1 || warn "$stack_name failed to start"
+    done
     echo ""
     ok "Stacks started"
     echo ""
     info "Container status:"
-    docker compose -f "$REPO_DIR/docker-compose.yml" ps 2>/dev/null || true
+    docker ps --format 'table {{.Names}}\t{{.Status}}' 2>/dev/null || true
   else
-    info "Skipped. Start manually when ready:"
-    echo -e "  ${DIM}docker compose -f $REPO_DIR/docker-compose.yml up -d${NC}"
+    info "Skipped. Start a stack when ready with:"
+    echo -e "  ${DIM}docker compose -p <stack> -f <stack>/docker-compose.yml up -d${NC}"
   fi
 
   # ── Commit and push ──────────────────────────────────
