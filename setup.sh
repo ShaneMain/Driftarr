@@ -763,9 +763,12 @@ SSHDEOF
   WORKFLOW_CHANGED=false
   if [ -f "$WORKFLOW" ]; then
     if grep -q 'if: false' "$WORKFLOW"; then
-      if confirm "Enable the deploy workflow? (removes 'if: false' from deploy.yml)"; then
-        sed -i '/if: false/d' "$WORKFLOW"
-        ok "Workflow enabled"
+      if confirm "Enable the deploy workflow? (gates deploy on a passing Validate)"; then
+        # Replace the disabling condition with the real gate — deleting it
+        # would leave the job with no `if:`, so it would deploy on EVERY
+        # Validate run, including a failed one.
+        sed -i "s#^\( *\)if: false\$#\1if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'#" "$WORKFLOW"
+        ok "Workflow enabled (deploys only when Validate passes or on manual dispatch)"
         WORKFLOW_CHANGED=true
       else
         warn "Workflow still disabled — remove the 'if: false' line manually when ready"
