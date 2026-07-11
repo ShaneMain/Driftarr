@@ -6,3 +6,4 @@ include:
   - dashboard/docker-compose.yml
   - dns/docker-compose.yml
   # - monitoring/docker-compose.yml
+  # - vaultwarden/docker-compose.yml  # password manager — enable off-site backups too

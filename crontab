@@ -7,3 +7,6 @@
 
 # ── DNS watchdog: probe + auto-recover AdGuard (LAN-critical once router DHCP points here) ──
 * * * * * /home/$USER/docker-stacks/dns/dns-watchdog.sh
+
+# ── Off-site backup — nightly (uncomment once configured; see backup/backup-and-recovery.md) ──
+#30 3 * * * /home/$USER/docker-stacks/backup/backup.sh >> /home/$USER/backup.log 2>&1
