@@ -1,5 +1,6 @@
 """Tests for sync.py and export.py entry points."""
 
+import os
 import time
 from unittest.mock import MagicMock, patch
 
@@ -150,3 +151,109 @@ class TestExportMarkerCheck:
                 export_mod.git_commit_and_push()
                 add_calls = [c for c in mock_git.call_args_list if c[0][0] == 'add']
                 assert len(add_calls) >= 1
+
+
+class TestExportReadEnvKeys:
+    """read_env_keys parses .env into *_API_KEY env vars, honoring quotes/comments."""
+
+    @staticmethod
+    def _write(repo_dir, text):
+        (repo_dir / ".env").write_text(text)
+
+    def test_strips_quotes_and_inline_comments(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(export_mod, "REPO_DIR", tmp_path)
+        for k in ("FOO_API_KEY", "BAR_API_KEY", "BAZ_API_KEY", "QUX_API_KEY", "PLAIN_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        self._write(tmp_path, (
+            "# header\n"
+            "FOO_API_KEY=\"double\"\n"
+            "BAR_API_KEY='single'\n"
+            "BAZ_API_KEY=value # comment\n"
+            "QUX_API_KEY=abc#123\n"   # '#' with no preceding space stays part of the value
+            "PLAIN_API_KEY=bare\n"
+        ))
+        export_mod.read_env_keys()
+        assert os.environ["FOO_API_KEY"] == "double"
+        assert os.environ["BAR_API_KEY"] == "single"
+        assert os.environ["BAZ_API_KEY"] == "value"
+        assert os.environ["QUX_API_KEY"] == "abc#123"
+        assert os.environ["PLAIN_API_KEY"] == "bare"
+
+    def test_only_sets_api_key_vars(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(export_mod, "REPO_DIR", tmp_path)
+        monkeypatch.delenv("OTHER_VAR", raising=False)
+        self._write(tmp_path, "OTHER_VAR=ignored\nREAL_API_KEY=ok\n")
+        export_mod.read_env_keys()
+        assert "OTHER_VAR" not in os.environ
+        assert os.environ["REAL_API_KEY"] == "ok"
+
+    def test_does_not_override_existing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(export_mod, "REPO_DIR", tmp_path)
+        monkeypatch.setenv("EXISTING_API_KEY", "from-shell")
+        self._write(tmp_path, "EXISTING_API_KEY=from-file\n")
+        export_mod.read_env_keys()
+        assert os.environ["EXISTING_API_KEY"] == "from-shell"
+
+    def test_missing_env_file_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(export_mod, "REPO_DIR", tmp_path)
+        monkeypatch.delenv("NONE_API_KEY", raising=False)
+        export_mod.read_env_keys()  # no .env present — must not raise
+        assert "NONE_API_KEY" not in os.environ
+
+
+class TestExportDryRunCompare:
+    def test_reports_changed_and_new(self, tmp_path, monkeypatch, capsys):
+        data_dir = tmp_path / "data"
+        monkeypatch.setattr(export_mod, "DATA_DIR", data_dir)
+        (data_dir / "radarr").mkdir(parents=True)
+        (data_dir / "radarr" / "changed.json").write_text('{"v": 1}')
+        (data_dir / "radarr" / "same.json").write_text('{"v": 1}')
+
+        tmp_export = tmp_path / "export"
+        (tmp_export / "radarr").mkdir(parents=True)
+        (tmp_export / "radarr" / "changed.json").write_text('{"v": 2}')
+        (tmp_export / "radarr" / "same.json").write_text('{"v": 1}')
+        (tmp_export / "radarr" / "new.json").write_text('{}')
+
+        export_mod.dry_run_compare(tmp_export)
+        out = capsys.readouterr().out
+        assert "CHANGED: radarr/changed.json" in out
+        assert "NEW: radarr/new.json" in out
+        assert "radarr/same.json" not in out
+
+    def test_reports_no_changes_when_identical(self, tmp_path, monkeypatch, capsys):
+        data_dir = tmp_path / "data"
+        monkeypatch.setattr(export_mod, "DATA_DIR", data_dir)
+        (data_dir / "svc").mkdir(parents=True)
+        (data_dir / "svc" / "x.json").write_text('{}')
+
+        tmp_export = tmp_path / "export"
+        (tmp_export / "svc").mkdir(parents=True)
+        (tmp_export / "svc" / "x.json").write_text('{}')
+
+        export_mod.dry_run_compare(tmp_export)
+        assert "no changes detected" in capsys.readouterr().out
+
+
+class TestExportDiscoverAndExport:
+    def test_exports_reachable_skips_unreachable_continues_on_error(self, tmp_path, capsys):
+        good = MagicMock()
+        good.name = "good"
+        good.is_reachable.return_value = True
+        down = MagicMock()
+        down.name = "down"
+        down.is_reachable.return_value = False
+        broken = MagicMock()
+        broken.name = "broken"
+        broken.is_reachable.return_value = True
+        broken.export.side_effect = RuntimeError("kaboom")
+
+        with patch.object(export_mod, "discover_modules", return_value=[good, down, broken]):
+            export_mod.discover_and_export(tmp_path)  # must not raise on broken.export
+
+        good.export.assert_called_once()
+        down.export.assert_not_called()
+        broken.export.assert_called_once()
+        out = capsys.readouterr().out
+        assert "down: not reachable" in out
+        assert "ERROR exporting broken" in out
