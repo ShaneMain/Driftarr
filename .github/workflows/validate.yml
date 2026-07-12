@@ -21,14 +21,16 @@ jobs:
       - name: Scan for leaked secrets (gitleaks)
         run: |
           # Defense in depth alongside .gitignore and GitHub's own push
-          # protection: scans commit history for API keys, tokens, and private
-          # keys. Pinned binary (not gitleaks-action) for a self-contained,
-          # fully version-pinned scan.
+          # protection: scans the pushed code for API keys, tokens, and private
+          # keys. --no-git because the CI checkout is shallow (fetch-depth 1) —
+          # scan the actual working tree, and yield stable path-based fingerprints
+          # for .gitleaksignore (SHA-based fingerprints change every push). Pinned
+          # binary (not gitleaks-action) for a self-contained, version-pinned scan.
           GLVER=v8.30.1
           ASSET="gitleaks_${GLVER#v}_linux_x64.tar.gz"
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${GLVER}/${ASSET}" \
             | tar -xz -C /tmp gitleaks
-          /tmp/gitleaks detect --source=. --no-banner --redact --verbose
+          /tmp/gitleaks detect --source=. --no-banner --redact --verbose --no-git
           echo "✅ No leaked secrets detected"
 
       - name: Validate compose files
