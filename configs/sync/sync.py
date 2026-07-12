@@ -19,13 +19,11 @@ This upholds the deploy-is-end-to-end-or-it-fails principle: a partial
 sync is treated as a failure, not a success.
 """
 
-import importlib
 import pathlib
-import pkgutil
 import sys
 import time
 
-from configs.sync.base import AppModule, log
+from configs.sync.base import AppModule, discover_modules, log
 
 CONFIGS_DIR = pathlib.Path("/configs")
 DATA_DIR = CONFIGS_DIR / "data"
@@ -36,26 +34,6 @@ SYNC_MARKER = pathlib.Path("/tmp/config-sync-ran")
 REACHABILITY_ATTEMPTS = 4
 REACHABILITY_WAIT_PER_ATTEMPT = 30  # seconds passed to module.wait_until_ready
 REACHABILITY_BACKOFF = 20  # seconds between attempts after the first
-
-
-def discover_modules(data_dir: pathlib.Path, mode: str) -> list[AppModule]:
-    """Import all modules in configs.sync.modules and instantiate AppModule subclasses."""
-    import configs.sync.modules as pkg
-
-    modules = []
-    for importer, modname, ispkg in pkgutil.iter_modules(pkg.__path__):
-        mod = importlib.import_module(f"configs.sync.modules.{modname}")
-        for attr in dir(mod):
-            cls = getattr(mod, attr)
-            if (
-                isinstance(cls, type)
-                and issubclass(cls, AppModule)
-                and cls is not AppModule
-                and cls.name
-                and not any(c.name == cls.name for c in modules)
-            ):
-                modules.append(cls(data_dir, mode))
-    return modules
 
 
 def is_required(mod: AppModule) -> bool:

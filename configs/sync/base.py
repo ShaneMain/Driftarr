@@ -264,3 +264,37 @@ class AppModule:
     def export(self):
         """Pull app APIs → data/ JSON files."""
         raise NotImplementedError
+
+
+# ── Module discovery ────────────────────────────────────
+# Shared by sync.py and export.py so the discovery rule (auto-discover every
+# AppModule subclass in configs/sync/modules/, dedup by .name) lives in one
+# place. pkgutil walks the package lazily here to avoid a circular import:
+# base.py is imported by every module, so importing the package at module load
+# would re-enter base.py before AppModule is defined.
+
+def discover_modules(data_dir: pathlib.Path, mode: str) -> list[AppModule]:
+    """Import all modules in configs.sync.modules and instantiate AppModule subclasses.
+
+    Drop a .py file in configs/sync/modules/ that subclasses AppModule and it is
+    picked up with no registration. The first definition of each name wins.
+    """
+    import importlib
+    import pkgutil
+
+    import configs.sync.modules as pkg
+
+    modules: list[AppModule] = []
+    for _importer, modname, _ispkg in pkgutil.iter_modules(pkg.__path__):
+        mod = importlib.import_module(f"configs.sync.modules.{modname}")
+        for attr in dir(mod):
+            cls = getattr(mod, attr)
+            if (
+                isinstance(cls, type)
+                and issubclass(cls, AppModule)
+                and cls is not AppModule
+                and cls.name
+                and not any(c.name == cls.name for c in modules)
+            ):
+                modules.append(cls(data_dir, mode))
+    return modules

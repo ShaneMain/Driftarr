@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from configs.sync.base import log
+from configs.sync.base import discover_modules, log
 
 REPO_DIR = pathlib.Path(os.environ.get("REPO_DIR", f"/home/{os.environ.get('USER', 'root')}/docker-stacks"))
 CONFIGS_DIR = REPO_DIR / "configs"
@@ -55,25 +55,7 @@ def read_env_keys():
 
 def discover_and_export(data_dir: pathlib.Path):
     """Discover modules and run export() on each reachable one."""
-    import importlib
-    import pkgutil
-    from configs.sync.base import AppModule
-    import configs.sync.modules as pkg
-
-    modules = []
-    for _, modname, _ in pkgutil.iter_modules(pkg.__path__):
-        mod = importlib.import_module(f"configs.sync.modules.{modname}")
-        for attr in dir(mod):
-            cls = getattr(mod, attr)
-            if (
-                isinstance(cls, type)
-                and issubclass(cls, AppModule)
-                and cls is not AppModule
-                and cls.name
-                and not any(c.name == cls.name for c in modules)
-            ):
-                modules.append(cls(data_dir, "export"))
-
+    modules = discover_modules(data_dir, "export")
     log("config-export", f"discovered modules: {', '.join(m.name for m in modules)}")
 
     for mod in modules:
