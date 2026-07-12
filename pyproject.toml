@@ -1,0 +1,13 @@
+# Ruff config for the config-sync engine and tests.
+# Ruff is also run in CI (see .github/workflows/validate.yml).
+[tool.ruff]
+target-version = "py312"   # matches configs/Dockerfile (python:3.12-alpine)
+line-length = 100          # formatter guidance only — E501 is NOT enforced below
+
+[tool.ruff.lint]
+# Defaults (E4/E7/E9/F) plus:
+#   I  — isort: keep imports grouped and sorted
+# Deliberately not enabled:
+#   E501 — line length is a formatting preference, not a lint failure (matches
+#          Black/ruff-format philosophy); the codebase routinely runs slightly long.
+select = ["E4", "E7", "E9", "F", "I"]

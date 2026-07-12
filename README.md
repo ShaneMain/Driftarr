@@ -24,6 +24,20 @@ Driftarr applies DevOps and Infrastructure as Code (IaC) principles to self-host
 
 The deploy pipeline, security model, and config sync engine are the core value. The included stacks are just a starting point.
 
+## When to use this (and when not to)
+
+Driftarr targets a specific niche: a **single self-hosted server** running **Docker Compose**, where you want git-driven deploys **and** version-controlled application config (not just infrastructure). It is not a Kubernetes or multi-node tool.
+
+| If you want… | Consider instead |
+| --- | --- |
+| Kubernetes GitOps | [Flux](https://fluxcd.io/) / [Argo CD](https://argoproj.github.io/argo-cd/) |
+| Multi-host fleet configuration | [Ansible](https://www.ansible.com/) / [Nomad](https://www.nomadproject.io/) |
+| A managed self-host PaaS | [Coolify](https://coolify.io/) / [Dokku](https://dokku.com/) / [CapRover](https://caprover.com/) |
+| A web UI for ad-hoc container management | [Komodo](https://komo.do/) / [Portainer](https://www.portainer.io/) / [Dockge](https://github.com/louislam/dockge) |
+| Only image auto-updates | [Watchtower](https://containrrr.dev/watchtower/) / [What's Up Docker](https://fmartinou.github.io/whats-up-docker/) |
+
+**What Driftarr does that those don't:** treat *application config* (Radarr custom formats, qBittorrent preferences, quality/naming profiles) as declarative git state with **bidirectional** sync — the repo is the source of truth on deploys, and edits made in the UI flow back into git on a cron. It is purpose-built for the `*arr` / self-hosted-media homelab, and for owners who want the safety of GitOps (reviewable changes, automatic rollback, auditable history) without adopting Kubernetes.
+
 ## Key Features
 
 - **Git-managed infrastructure + app config** — Docker Compose stacks, service settings (custom formats, quality profiles, naming conventions, media management), and deploy logic all live in version control, with an extensible configuration sync framework that captures changes from both code and UI

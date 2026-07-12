@@ -18,6 +18,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Scan for leaked secrets (gitleaks)
+        run: |
+          # Defense in depth alongside .gitignore and GitHub's own push
+          # protection: scans commit history for API keys, tokens, and private
+          # keys. Pinned binary (not gitleaks-action) for a self-contained,
+          # fully version-pinned scan.
+          GLVER=v8.30.1
+          ASSET="gitleaks_${GLVER#v}_linux_x64.tar.gz"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${GLVER}/${ASSET}" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source=. --no-banner --redact --verbose
+          echo "✅ No leaked secrets detected"
+
       - name: Validate compose files
         run: |
           for f in $(find . -name 'docker-compose.yml'); do
@@ -141,6 +154,16 @@ jobs:
             [ -f "$f" ] && python3 -m py_compile "$f"
           done
           echo "✅ Python syntax OK"
+
+      - name: Lint Python (ruff)
+        run: |
+          # Catches unused imports, undefined names, and import-order drift
+          # across the sync engine and tests. Config lives in pyproject.toml —
+          # intentionally scoped to defaults + import sorting (E4/E7/E9/F/I) so
+          # it surfaces real bugs, not line-length noise.
+          python3 -m pip install --quiet ruff
+          ruff check configs/ tests/
+          echo "✅ ruff lint OK"
 
       - name: Run config-sync engine tests
         run: |

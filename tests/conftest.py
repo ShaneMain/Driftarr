@@ -1,16 +1,13 @@
 """Shared pytest fixtures for config sync module tests."""
 
-import json
 import os
-import pathlib
-import tempfile
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from configs.sync.base import AppModule
+import pytest
+
+from configs.sync.modules.qbittorrent import QbittorrentModule
 from configs.sync.modules.radarr import RadarrModule
 from configs.sync.modules.sonarr import SonarrModule
-from configs.sync.modules.qbittorrent import QbittorrentModule
 
 
 @pytest.fixture

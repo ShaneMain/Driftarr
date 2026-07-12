@@ -1,8 +1,6 @@
 """Tests for RadarrModule (configs/sync/modules/radarr.py)."""
 
-import json
-import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
 
 class TestRadarrInit:

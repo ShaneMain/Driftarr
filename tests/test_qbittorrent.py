@@ -1,10 +1,8 @@
 """Tests for QbittorrentModule (configs/sync/modules/qbittorrent.py)."""
 
-import json
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from configs.sync.modules.qbittorrent import QbittorrentModule, EXCLUDED_KEYS
+from configs.sync.modules.qbittorrent import EXCLUDED_KEYS, QbittorrentModule
 
 
 class TestQbittorrentInit:
