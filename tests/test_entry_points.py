@@ -1,12 +1,12 @@
 """Tests for sync.py and export.py entry points."""
 
-import pathlib
 import time
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-import configs.sync.sync as sync_mod
+import pytest
+
 import configs.sync.export as export_mod
+import configs.sync.sync as sync_mod
 
 
 def _make_mod(name, data_dir, ready=True, has_data=False):

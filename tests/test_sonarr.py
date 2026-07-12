@@ -1,6 +1,5 @@
 """Tests for SonarrModule (configs/sync/modules/sonarr.py)."""
 
-import pytest
 from unittest.mock import patch
 
 from configs.sync.modules.radarr import RadarrModule

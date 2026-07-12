@@ -1,9 +1,9 @@
 """Tests for AppModule base class (configs/sync/base.py)."""
 
-import json
 import os
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from configs.sync.base import AppModule
 
