@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# pre-push — block the push if any pushed commit introduces a literal .env value.
+# Enabled by `git config core.hooksPath .githooks` (run setup.sh to set it).
+# stdin: <local-ref> <local-sha> <remote-ref> <remote-sha> per pushed ref.
+ZERO=0000000000000000000000000000000000000000
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$remote_sha" = "$ZERO" ] && continue          # new branch — scan whole range below
+  [ "$local_sha"  = "$ZERO" ] && continue          # branch delete — nothing to scan
+  # Only scan forward (fast-forward) pushes; skip complex/force updates here —
+  # the gitleaks CI gate and pre-commit hook cover those cases.
+  git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null || continue
+  "$(git rev-parse --show-toplevel)/scripts/secret-guard.sh" range "$remote_sha" "$local_sha" || exit 1
+done
+exit 0

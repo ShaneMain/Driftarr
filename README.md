@@ -287,8 +287,17 @@ The deploy pipeline uses a zero-trust architecture with defense in depth:
 | Authorization | sshd `ForceCommand` | Second independent layer — same restriction |
 | Privilege | sudoers scoping | `deploy` can only `sudo -u $USER deploy.sh` |
 | Secrets | GitHub Actions secrets | SSH key, Tailscale OAuth credentials never in code |
+| Secrets | gitleaks CI gate | Scans every push/PR for leaked credential patterns |
+| Secrets | secret-guard hooks (`core.hooksPath .githooks`) | Blocks any commit/push containing a literal `.env` value before it leaves the machine |
 
 The `deploy` user has no password, no shell access, and no permissions beyond executing the deploy script as the owning user.
+
+### Preventing secret leaks
+
+Two independent layers catch leaked secrets at different points:
+
+- **`secret-guard` (pre-commit / pre-push hooks)** — proactive. Reads the real values from your `.env` and blocks any commit or push whose tracked files contain a literal match. This is exact-value matching, so it catches *this* deployment's actual keys, not just generic patterns. Installed by `setup.sh` via `git config core.hooksPath .githooks`; a no-op on machines without a `.env` (CI, fresh clones). To auto-fix a hit in a shell/compose file, run `scripts/secret-guard.sh --fix` (replaces the literal with `${VAR}`, which bash/compose expand at runtime).
+- **gitleaks (CI gate)** — reactive backstop. Pattern-based scan of every push/PR in case a secret slips past the hooks (e.g., committed on a machine without the hook installed).
 
 ## Extending
 

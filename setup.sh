@@ -780,6 +780,18 @@ SSHDEOF
     warn "deploy.yml not found at $WORKFLOW"
   fi
 
+  # ── Enable secret-guard hooks ───────────────────────
+  # Point git at the repo's .githooks/ so pre-commit/pre-push run. secret-guard
+  # blocks any commit/push containing a literal .env value, so real API keys
+  # can't be committed by accident. No-op on machines without a .env (CI, fresh
+  # clones). See scripts/secret-guard.sh.
+  if [ -d "$REPO_DIR/.githooks" ]; then
+    git -C "$REPO_DIR" config core.hooksPath .githooks
+    ok "Secret-guard hooks active (core.hooksPath = .githooks)"
+  else
+    warn ".githooks/ not found — secret-guard hooks skipped"
+  fi
+
   # ── Config export cron ───────────────────────────────
   step 7 "Config sync export cron (optional)"
 
