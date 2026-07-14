@@ -28,6 +28,10 @@ SECRET_KEY_PATTERNS = (
     "cookies",
     "hashed_password",
     "secret",
+    "passkey",
+    "encryption",
+    "captcha",
+    "gemini_key",
 )
 
 
