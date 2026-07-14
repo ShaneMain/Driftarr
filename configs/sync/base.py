@@ -21,10 +21,10 @@ def log(prefix: str, msg: str):
 
 
 class AppModule:
-    name: str = ""           # e.g. "radarr" — also the data subdirectory name
-    url_env: str = ""        # env var for URL, e.g. "RADARR_URL"
-    key_env: str = ""        # env var for API key, e.g. "RADARR_API_KEY"
-    default_url: str = ""    # fallback URL if env var not set
+    name: str = ""  # e.g. "radarr" — also the data subdirectory name
+    url_env: str = ""  # env var for URL, e.g. "RADARR_URL"
+    key_env: str = ""  # env var for API key, e.g. "RADARR_API_KEY"
+    default_url: str = ""  # fallback URL if env var not set
     config_xml_path: str = ""  # optional: path to config.xml for API key
     expected_files: list[str] = []  # files that should exist after export (for bootstrap detection)
 
@@ -40,6 +40,7 @@ class AppModule:
             return
         try:
             import xml.etree.ElementTree as ET
+
             tree = ET.parse(self.config_xml_path)
             node = tree.find("ApiKey")
             if node is not None and node.text:
@@ -86,6 +87,7 @@ class AppModule:
 
         import socket
         from urllib.parse import urlparse
+
         parsed = urlparse(self.url)
         host = parsed.hostname
         port = parsed.port or 80
@@ -170,7 +172,7 @@ class AppModule:
     def write_json(self, filename: str, data: Any):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         with open(self.data_dir / filename, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, sort_keys=True)
             f.write("\n")
 
     # ── Env-var expansion for secret interpolation ────
@@ -272,6 +274,7 @@ class AppModule:
 # place. pkgutil walks the package lazily here to avoid a circular import:
 # base.py is imported by every module, so importing the package at module load
 # would re-enter base.py before AppModule is defined.
+
 
 def discover_modules(data_dir: pathlib.Path, mode: str) -> list[AppModule]:
     """Import all modules in configs.sync.modules and instantiate AppModule subclasses.
