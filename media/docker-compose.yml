@@ -86,4 +86,6 @@ services:
       - ${DOCKER_DIR}/sonarr:/sonarr-config:ro
     environment:
       SEERR_API_KEY: ${SEERR_API_KEY:-}
+      BAZARR_API_KEY: ${BAZARR_API_KEY:-}
+      PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
     restart: "no"
