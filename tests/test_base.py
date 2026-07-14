@@ -14,18 +14,21 @@ class TestAppModuleInit:
     def test_url_from_env(self, data_dir):
         with patch.dict(os.environ, {"RADARR_URL": "http://custom:9999", "RADARR_API_KEY": "k"}):
             from configs.sync.modules.radarr import RadarrModule
+
             mod = RadarrModule(data_dir, "sync")
             assert mod.url == "http://custom:9999"
 
     def test_url_falls_back_to_default(self, data_dir):
         with patch.dict(os.environ, {}, clear=True):
             from configs.sync.modules.radarr import RadarrModule
+
             mod = RadarrModule(data_dir, "sync")
             assert mod.url == RadarrModule.default_url
 
     def test_api_key_from_env(self, data_dir):
         with patch.dict(os.environ, {"RADARR_URL": "http://x", "RADARR_API_KEY": "secret123"}):
             from configs.sync.modules.radarr import RadarrModule
+
             mod = RadarrModule(data_dir, "sync")
             assert mod.api_key == "secret123"
 
@@ -49,10 +52,29 @@ class TestJsonIO:
     def test_write_creates_directory(self, data_dir):
         with patch.dict(os.environ, {"RADARR_URL": "http://x", "RADARR_API_KEY": "k"}):
             from configs.sync.modules.radarr import RadarrModule
+
             mod = RadarrModule(data_dir, "sync")
             # data_dir/radarr/ doesn't exist yet
             mod.write_json("test.json", {"a": 1})
             assert (data_dir / "radarr" / "test.json").exists()
+
+    def test_write_json_sorts_keys(self, radarr):
+        """write_json must produce sorted-key output for deterministic diffs."""
+        radarr.write_json("sorted.json", {"z": 1, "a": 2, "m": {"y": 0, "b": 1}})
+        raw = (radarr.data_dir / "sorted.json").read_text()
+        # Keys should appear in alphabetical order in the file
+        assert raw.index('"a"') < raw.index('"m"') < raw.index('"z"')
+        assert raw.index('"b"') < raw.index('"y"')
+
+    def test_write_json_deterministic_across_insertion_order(self, radarr):
+        """Same data with different dict insertion order must produce identical bytes."""
+        d1 = {"zebra": 1, "alpha": 2, "mid": {"y": 0, "a": 1}}
+        d2 = {"alpha": 2, "mid": {"a": 1, "y": 0}, "zebra": 1}
+        radarr.write_json("d1.json", d1)
+        radarr.write_json("d2.json", d2)
+        f1 = (radarr.data_dir / "d1.json").read_text()
+        f2 = (radarr.data_dir / "d2.json").read_text()
+        assert f1 == f2
 
 
 class TestBootstrapMode:
@@ -82,38 +104,37 @@ class TestApiHelpers:
     """Test _request, api_get, api_put, api_post, api_delete."""
 
     def test_api_get_calls_request(self, radarr):
-        with patch.object(radarr, '_request', return_value=[{"id": 1}]) as mock:
+        with patch.object(radarr, "_request", return_value=[{"id": 1}]) as mock:
             result = radarr.api_get("customformat")
             mock.assert_called_once()
             assert "customformat" in mock.call_args[0][0]
             assert result == [{"id": 1}]
 
     def test_api_put_sends_data(self, radarr):
-        with patch.object(radarr, '_request', return_value=None) as mock:
+        with patch.object(radarr, "_request", return_value=None) as mock:
             radarr.api_put("customformat/1", {"id": 1, "name": "test"})
             mock.assert_called_once()
             assert mock.call_args[0][1] == "PUT"
             assert mock.call_args[0][2] == {"id": 1, "name": "test"}
 
     def test_api_post_sends_data(self, radarr):
-        with patch.object(radarr, '_request', return_value={"id": 99}) as mock:
+        with patch.object(radarr, "_request", return_value={"id": 99}) as mock:
             result = radarr.api_post("customformat", {"name": "new"})
             mock.assert_called_once()
             assert mock.call_args[0][1] == "POST"
             assert result == {"id": 99}
 
     def test_api_delete(self, radarr):
-        with patch.object(radarr, '_request', return_value=None) as mock:
+        with patch.object(radarr, "_request", return_value=None) as mock:
             radarr.api_delete("customformat/1")
             mock.assert_called_once()
             assert mock.call_args[0][1] == "DELETE"
 
     def test_request_wraps_http_error(self, radarr):
         import urllib.error
-        with patch('urllib.request.urlopen') as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.HTTPError(
-                "http://x", 500, "fail", {}, None
-            )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError("http://x", 500, "fail", {}, None)
             with pytest.raises(RuntimeError, match="500"):
                 radarr._request("http://x/test", "GET")
 
@@ -127,7 +148,9 @@ class TestExpandEnv:
 
     def test_substitutes_in_dict_values(self):
         with patch.dict(os.environ, {"USER": "alice", "PASS": "pw"}):
-            result = AppModule.expand_env({"Server.Username": "${USER}", "Server.Password": "${PASS}"})
+            result = AppModule.expand_env(
+                {"Server.Username": "${USER}", "Server.Password": "${PASS}"}
+            )
             assert result == {"Server.Username": "alice", "Server.Password": "pw"}
 
     def test_missing_var_becomes_empty_string(self):
@@ -136,7 +159,11 @@ class TestExpandEnv:
 
     def test_non_strings_pass_through(self):
         with patch.dict(os.environ, {"X": "1"}):
-            assert AppModule.expand_env({"n": 42, "b": True, "s": "${X}"}) == {"n": 42, "b": True, "s": "1"}
+            assert AppModule.expand_env({"n": 42, "b": True, "s": "${X}"}) == {
+                "n": 42,
+                "b": True,
+                "s": "1",
+            }
 
     def test_recursive_into_lists(self):
         with patch.dict(os.environ, {"A": "x", "B": "y"}):

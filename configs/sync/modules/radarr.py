@@ -21,7 +21,7 @@ class RadarrModule(AppModule):
         "quality-definitions.json",
         "naming.json",
         "media-management.json",
-        "root-folders.json"
+        "root-folders.json",
         # notifications.json is intentionally NOT required — the module has
         # additive semantics there (see _sync_notifications) and a missing
         # file is the "nothing declared" signal, not bootstrap.
@@ -44,23 +44,7 @@ class RadarrModule(AppModule):
 
     def _export_custom_formats(self):
         raw = self.api_get("customformat")
-        exported = sorted([
-            {
-                "name": cf["name"],
-                "includeCustomFormatWhenRenaming": cf.get("includeCustomFormatWhenRenaming", False),
-                "specifications": [
-                    {
-                        "name": s["name"],
-                        "implementation": s["implementation"],
-                        "negate": s["negate"],
-                        "required": s["required"],
-                        "fields": [{"name": f["name"], "value": f["value"]} for f in s["fields"]],
-                    }
-                    for s in cf.get("specifications", [])
-                ],
-            }
-            for cf in raw
-        ], key=lambda x: x["name"])
+        exported = sorted([self._strip_cf(cf) for cf in raw], key=lambda x: x["name"])
         self.write_json("custom-formats.json", exported)
         self.log(f"exported {len(exported)} custom formats")
 
@@ -83,15 +67,18 @@ class RadarrModule(AppModule):
 
     def _export_quality_definitions(self):
         raw = self.api_get("qualitydefinition")
-        exported = sorted([
-            {
-                "title": qd["title"],
-                "minSize": qd.get("minSize", 0),
-                "maxSize": qd.get("maxSize"),
-                "preferredSize": qd.get("preferredSize"),
-            }
-            for qd in raw
-        ], key=lambda x: x["title"])
+        exported = sorted(
+            [
+                {
+                    "title": qd["title"],
+                    "minSize": qd.get("minSize", 0),
+                    "maxSize": qd.get("maxSize"),
+                    "preferredSize": qd.get("preferredSize"),
+                }
+                for qd in raw
+            ],
+            key=lambda x: x["title"],
+        )
         self.write_json("quality-definitions.json", exported)
         self.log(f"exported {len(exported)} quality definitions")
 
@@ -140,11 +127,14 @@ class RadarrModule(AppModule):
             for k, v in self._notification_toggles(n).items():
                 if v:
                     entry[k] = True
-            fields = [
-                {"name": f["name"], "value": f["value"]}
-                for f in n.get("fields", [])
-                if f.get("value") not in (None, "", [], {})
-            ]
+            fields = sorted(
+                [
+                    {"name": f["name"], "value": f["value"]}
+                    for f in n.get("fields", [])
+                    if f.get("value") not in (None, "", [], {})
+                ],
+                key=lambda x: x["name"],
+            )
             if fields:
                 entry["fields"] = fields
             if n.get("tags"):
@@ -169,19 +159,22 @@ class RadarrModule(AppModule):
         return {
             "name": cf["name"],
             "includeCustomFormatWhenRenaming": cf.get("includeCustomFormatWhenRenaming", False),
-            "specifications": sorted([
-                {
-                    "name": s["name"],
-                    "implementation": s["implementation"],
-                    "negate": s["negate"],
-                    "required": s["required"],
-                    "fields": sorted(
-                        [{"name": f["name"], "value": f["value"]} for f in s["fields"]],
-                        key=lambda x: x["name"],
-                    ),
-                }
-                for s in cf.get("specifications", [])
-            ], key=lambda x: x["name"]),
+            "specifications": sorted(
+                [
+                    {
+                        "name": s["name"],
+                        "implementation": s["implementation"],
+                        "negate": s["negate"],
+                        "required": s["required"],
+                        "fields": sorted(
+                            [{"name": f["name"], "value": f["value"]} for f in s["fields"]],
+                            key=lambda x: x["name"],
+                        ),
+                    }
+                    for s in cf.get("specifications", [])
+                ],
+                key=lambda x: x["name"],
+            ),
         }
 
     def _sync_custom_formats(self):
@@ -257,7 +250,9 @@ class RadarrModule(AppModule):
                 # Create missing profile by cloning an existing one as template
                 template = self._clone_profile_template(profiles)
                 if template is None:
-                    self.log(f"WARNING: profile '{pname}' not found and no existing profiles to use as template — skipping")
+                    self.log(
+                        f"WARNING: profile '{pname}' not found and no existing profiles to use as template — skipping"
+                    )
                     continue
                 template["name"] = pname
                 for field in ("minFormatScore", "cutoffFormatScore"):
@@ -281,7 +276,9 @@ class RadarrModule(AppModule):
             for field in ("minFormatScore", "cutoffFormatScore"):
                 if field in pconfig and pconfig[field] != profile.get(field):
                     if self.mode == "diff":
-                        self.log(f"profile '{pname}': {field} {profile.get(field)} -> {pconfig[field]}")
+                        self.log(
+                            f"profile '{pname}': {field} {profile.get(field)} -> {pconfig[field]}"
+                        )
                     profile[field] = pconfig[field]
                     updated = True
 
@@ -326,7 +323,9 @@ class RadarrModule(AppModule):
             remote = remote_by_title[title]
             if any(dqd.get(f) != remote.get(f) for f in ("minSize", "maxSize", "preferredSize")):
                 if self.mode == "diff":
-                    self.log(f"quality '{title}': min={remote.get('minSize')}→{dqd.get('minSize')} max={remote.get('maxSize')}→{dqd.get('maxSize')} pref={remote.get('preferredSize')}→{dqd.get('preferredSize')}")
+                    self.log(
+                        f"quality '{title}': min={remote.get('minSize')}→{dqd.get('minSize')} max={remote.get('maxSize')}→{dqd.get('maxSize')} pref={remote.get('preferredSize')}→{dqd.get('preferredSize')}"
+                    )
                 else:
                     remote.update({k: dqd[k] for k in ("minSize", "maxSize", "preferredSize")})
                     self.api_put(f"qualitydefinition/{remote['id']}", remote)
@@ -463,7 +462,9 @@ class RadarrModule(AppModule):
                         if f["name"] == k:
                             if f.get("value") != v:
                                 if self.mode == "diff":
-                                    self.log(f"notification '{name}': field {k} {f.get('value')!r} -> {v!r}")
+                                    self.log(
+                                        f"notification '{name}': field {k} {f.get('value')!r} -> {v!r}"
+                                    )
                                 f["value"] = v
                                 updated = True
                             replaced = True
@@ -516,11 +517,15 @@ class RadarrModule(AppModule):
                 if field["name"] == self.import_category_field:
                     if field["value"] != self.import_category_value:
                         if self.mode == "diff":
-                            self.log(f"download client: would set {self.import_category_field} '{field['value']}' -> '{self.import_category_value}'")
+                            self.log(
+                                f"download client: would set {self.import_category_field} '{field['value']}' -> '{self.import_category_value}'"
+                            )
                         else:
                             field["value"] = self.import_category_value
                             self.api_put(f"downloadclient/{client['id']}", client)
-                            self.log(f"download client: set {self.import_category_field} -> '{self.import_category_value}'")
+                            self.log(
+                                f"download client: set {self.import_category_field} -> '{self.import_category_value}'"
+                            )
                     else:
                         self.log("download client: post-import category in sync")
                     break
