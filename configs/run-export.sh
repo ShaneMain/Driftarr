@@ -12,6 +12,8 @@ export REPO_DIR
 # Export runs on the host — override Docker-internal hostnames with localhost
 export RADARR_URL="${RADARR_URL:-http://localhost:7878}"
 export SONARR_URL="${SONARR_URL:-http://localhost:8989}"
+export BAZARR_URL="${BAZARR_URL:-http://localhost:6767}"
+export PROWLARR_URL="${PROWLARR_URL:-http://localhost:9696}"
 
 # Fix ownership if configs/data/ was created by Docker container (root-owned)
 DATA_DIR="$REPO_DIR/configs/data"
