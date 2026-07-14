@@ -3,10 +3,13 @@
 Manages indexers and host config via the Prowlarr REST API (/api/v1/).
 Prowlarr is an *arr app but uses v1 (not v3 like Radarr/Sonarr).
 
-Indexer secrets (cookies, API keys) are masked as '********' by Prowlarr's
-API — they are kept as-is on export and ignored on sync (standard *arr
-behavior: '********' means 'unchanged'). Host config secrets (apiKey,
-password) are redacted with <REDACTED> and preserved via merge-before-write.
+Secret handling:
+- Host apiKey is exported as ${PROWLARR_API_KEY}. On sync, expand_env()
+  fills it from the environment — enables key rotation + fresh deploys.
+- Indexer secrets (cookies, API keys) are masked as '********' by Prowlarr's
+  API — kept as-is on export, ignored on sync (standard *arr behavior).
+- Other host secrets (password, proxyPassword) are <REDACTED> and preserved
+  via merge-before-write.
 """
 
 import copy
@@ -22,6 +25,12 @@ REDACTED = "<REDACTED>"
 HOST_SECRET_KEYS = frozenset(
     {"apiKey", "password", "passwordConfirmation", "proxyPassword", "sslCertPassword"}
 )
+
+# Host config keys exported as ${VAR} placeholders (flow from .env on deploy).
+# If the env var is unset, falls back to <REDACTED> (preserves live value).
+HOST_SECRET_ENV_MAPPING = {
+    "apiKey": "PROWLARR_API_KEY",
+}
 
 # Fields stripped from indexer exports (volatile / read-only / huge)
 INDEXER_VOLATILE_FIELDS = frozenset(
@@ -167,7 +176,8 @@ class ProwlarrModule(AppModule):
         exported = {k: v for k, v in raw.items() if k != "id"}
         for k in HOST_SECRET_KEYS:
             if k in exported and exported[k]:
-                exported[k] = REDACTED
+                env_var = HOST_SECRET_ENV_MAPPING.get(k)
+                exported[k] = f"${{{env_var}}}" if env_var else REDACTED
         self.write_json("host-config.json", exported)
         self.log("exported host config")
 
@@ -243,6 +253,13 @@ class ProwlarrModule(AppModule):
         desired = self.load_json("host-config.json")
         if desired is None:
             return
+
+        # Expand ${VAR} placeholders from the environment.
+        # Unset env vars expand to "" — convert back to <REDACTED>.
+        desired = self.expand_env(desired)
+        for k, _env in HOST_SECRET_ENV_MAPPING.items():
+            if desired.get(k) == "":
+                desired[k] = REDACTED
 
         remote = self.api_get("config/host")
         remote_stripped = {k: v for k, v in remote.items() if k != "id"}

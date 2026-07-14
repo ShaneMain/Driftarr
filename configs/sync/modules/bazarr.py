@@ -1,8 +1,16 @@
 """Bazarr config sync module.
 
 Manages subtitle settings (48 sections) and language profiles via the
-Bazarr REST API (/api/). Settings are exported with secrets redacted;
-on sync, current live secrets are preserved via merge-before-write.
+Bazarr REST API (/api/).
+
+Secret handling:
+- Known integration keys (Sonarr, Radarr, Bazarr API keys) are exported
+  as ${VAR} placeholders. On sync, expand_env() replaces them with values
+  from the environment (.env). This enables key rotation and fresh deploys:
+  change the key in .env, deploy, and all referencing services get updated.
+- Other secrets (provider cookies, Plex tokens) are exported as <REDACTED>.
+  On sync, merge-before-write preserves the live value. These can't be
+  rotated via .env (no env var maps to them).
 
 Language profiles are export-only — Bazarr 1.x exposes no write API
 (POST/PATCH/DELETE return 405). They are captured for visibility but
@@ -33,6 +41,16 @@ SECRET_KEY_PATTERNS = (
     "captcha",
     "gemini_key",
 )
+
+# Maps (section, key) → env var name. On export, these secrets are written
+# as ${VAR} placeholders instead of <REDACTED>. On sync, expand_env() fills
+# them from the environment. If the env var is unset, falls back to <REDACTED>
+# (preserves the live value via merge-before-write).
+SECRET_ENV_MAPPING = {
+    ("auth", "apikey"): "BAZARR_API_KEY",
+    ("sonarr", "apikey"): "SONARR_API_KEY",
+    ("radarr", "apikey"): "RADARR_API_KEY",
+}
 
 
 def _is_secret_key(key: str) -> bool:
@@ -158,6 +176,14 @@ class BazarrModule(AppModule):
                 general[list_key] = sorted(general[list_key])
 
         redacted = self._redact(raw)
+
+        # Replace <REDACTED> with ${VAR} for mapped integration keys.
+        # These flow from .env on deploy — enables key rotation + fresh deploys.
+        for (section, key), env_var in SECRET_ENV_MAPPING.items():
+            sec = redacted.get(section)
+            if isinstance(sec, dict) and sec.get(key) == REDACTED:
+                sec[key] = f"${{{env_var}}}"
+
         self.write_json("settings.json", redacted)
         self.log(f"exported {len(redacted)} settings sections")
 
@@ -208,6 +234,15 @@ class BazarrModule(AppModule):
 
         if not self.wait_until_ready():
             return
+
+        # Expand ${VAR} placeholders from the environment.
+        # If an env var is unset, expand_env replaces with "" — convert those
+        # back to <REDACTED> so merge-before-write preserves the live secret.
+        desired = self.expand_env(desired)
+        for (section, key), _env_var in SECRET_ENV_MAPPING.items():
+            sec = desired.get(section)
+            if isinstance(sec, dict) and sec.get(key) == "":
+                sec[key] = REDACTED
 
         current = self.api_get("system/settings")
         merged = self._merge_keeping_secrets(current, desired)
