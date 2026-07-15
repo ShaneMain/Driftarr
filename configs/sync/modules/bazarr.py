@@ -18,10 +18,11 @@ cannot be pushed.
 """
 
 import copy
+import json
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from configs.sync.base import AppModule
 
@@ -70,8 +71,47 @@ class BazarrModule(AppModule):
     def api_get(self, endpoint: str):
         return self._request(f"{self.url}/api/{endpoint}")
 
-    def api_post(self, endpoint: str, data):
-        return self._request(f"{self.url}/api/{endpoint}", "POST", data)
+    def _post_settings_form(self, changed_sections: dict):
+        """POST settings as form-encoded data.
+
+        Bazarr's POST /api/system/settings reads request.form (NOT JSON).
+        Field names follow: settings-{section}-{key}. Booleans become
+        "true"/"false" strings. Lists become repeated fields. Notifications
+        use a separate notifications-providers field with JSON values.
+        """
+        form_fields = []
+        for section, fields in changed_sections.items():
+            if not isinstance(fields, dict):
+                continue
+            if section == "notifications":
+                # Notifications use a dedicated form field with JSON values
+                for provider in fields.get("providers", []):
+                    form_fields.append(("notifications-providers", json.dumps(provider)))
+                continue
+            for key, value in fields.items():
+                form_key = f"settings-{section}-{key}"
+                if isinstance(value, bool):
+                    form_fields.append((form_key, "true" if value else "false"))
+                elif isinstance(value, list):
+                    for item in value:
+                        form_fields.append((form_key, str(item)))
+                elif value is None:
+                    form_fields.append((form_key, ""))
+                else:
+                    form_fields.append((form_key, str(value)))
+
+        body = urlencode(form_fields).encode()
+        req = urllib.request.Request(
+            f"{self.url}/api/system/settings",
+            data=body,
+            headers={
+                "X-Api-Key": self.api_key,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
 
     # ── Health (override — Bazarr uses /api/system/status) ──
 
@@ -261,5 +301,5 @@ class BazarrModule(AppModule):
             self.log(f"would update sections: {sorted(changed_sections.keys())}")
             return
 
-        self.api_post("system/settings", changed_sections)
+        self._post_settings_form(changed_sections)
         self.log(f"updated {len(changed_sections)} sections: {sorted(changed_sections.keys())}")
