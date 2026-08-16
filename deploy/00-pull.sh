@@ -74,9 +74,21 @@ else
     fi
     warn "Stashed (recover with: git stash list / git stash pop)"
     if ! git pull --ff-only origin "$BRANCH"; then
-      err "git pull --ff-only still failing — checkout diverged from origin/$BRANCH"
-      err "Inspect on the server: git status && git log --oneline -5 && git stash list"
-      exit 1
+      # Divergence, not dirty tree: local has commits origin lacks (classic
+      # cause: an auto-export commit whose push was rejected). Rebase local
+      # commits onto the remote tip so deploys self-heal; a single transient
+      # push failure must never wedge every future deploy. Conflicts are
+      # not auto-resolvable — abort and fail loudly for a human.
+      warn "Diverged from origin/$BRANCH — rebasing local commits..."
+      git fetch origin "$BRANCH"
+      if git rebase "FETCH_HEAD"; then
+        warn "Rebased onto origin/$BRANCH ($(git rev-parse --short HEAD))"
+      else
+        git rebase --abort 2>/dev/null
+        err "Rebase onto origin/$BRANCH failed — conflicts need a human"
+        err "Inspect on the server: git log --oneline origin/$BRANCH..HEAD && git rebase origin/$BRANCH"
+        exit 1
+      fi
     fi
   fi
   AFTER=$(git rev-parse HEAD)

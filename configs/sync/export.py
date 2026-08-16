@@ -113,11 +113,29 @@ def git_commit_and_push():
         "chore(configs): auto-export config changes from UI\n\n"
         "Exported by config-export cron. Changes were made via application UIs.")
 
+    # Self-heal before giving up: if the push was rejected because origin
+    # moved ahead (e.g. a deploy landed between our last pull and now),
+    # rebase this commit onto the remote tip and retry. A rejected push
+    # that stays diverged wedges every future deploy — deploy/00-pull.sh
+    # pulls with --ff-only and hard-fails on divergence.
     result = git("push", "origin", BRANCH)
     if result.returncode == 0:
         log("config-export", f"pushed to origin/{BRANCH}")
+        return
+
+    log("config-export", f"push rejected — rebasing onto origin/{BRANCH} and retrying: {result.stderr.strip()}")
+    git("fetch", "origin", BRANCH)
+    rebase = git("rebase", f"origin/{BRANCH}")
+    if rebase.returncode != 0:
+        git("rebase", "--abort")
+        log("config-export", f"ERROR: rebase onto origin/{BRANCH} failed — server is diverged, "
+                             f"deploy will fail until resolved manually: {rebase.stderr.strip()}")
+        sys.exit(1)
+    result = git("push", "origin", BRANCH)
+    if result.returncode == 0:
+        log("config-export", f"pushed to origin/{BRANCH} (after rebase)")
     else:
-        log("config-export", f"ERROR: git push failed: {result.stderr}")
+        log("config-export", f"ERROR: git push failed after rebase: {result.stderr}")
         sys.exit(1)
 
 
