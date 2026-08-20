@@ -148,7 +148,8 @@ jobs:
           # "Permission denied" and its whole job silently stops working. Fail
           # here so that never reaches the server.
           crontab_refs=""
-          [ -f crontab ] && crontab_refs=$(cat crontab)
+          # Only real cron entries count — header comments may name scripts in prose.
+          [ -f crontab ] && crontab_refs=$(grep -Ev '^\s*(#|$)' crontab || true)
           rc=0
           while read -r mode _hash _stage path; do
             need_exec=0
