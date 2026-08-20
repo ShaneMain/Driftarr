@@ -1,6 +1,10 @@
-# Driftarr managed crontab — installed by deploy.sh
+# Driftarr managed crontab — installed by deploy.sh (deploy/40-crontab.sh)
 # Do not edit via `crontab -e`; changes will be overwritten on next deploy.
 # To add a job: add a line here, commit, push → deploy installs it automatically.
+#
+# $USER and $HOME below are placeholders: 40-crontab.sh substitutes them with
+# the deploying user before `crontab -`. cron does not expand variables itself
+# (and Debian's cron doesn't set USER), so never install this file verbatim.
 
 # ── Config export (pull live API state → git) — daily; commits only on change ──
 0 4 * * * /home/$USER/docker-stacks/configs/run-export.sh >> /home/$USER/config-export.log 2>&1

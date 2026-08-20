@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # Keep third-party GitHub Actions current so pinning them to a specific
-  # version/SHA can be maintained instead of drifting on a floating major tag.
+  # Actions in .github/workflows are pinned to full commit SHAs (with a
+  # `# vX.Y.Z` comment); Dependabot bumps both the SHA and the comment.
   - package-ecosystem: github-actions
     directory: /
     schedule:

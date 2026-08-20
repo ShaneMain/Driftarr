@@ -1,5 +1,6 @@
 """Tests for QbittorrentModule (configs/sync/modules/qbittorrent.py)."""
 
+import json
 from unittest.mock import patch
 
 from configs.sync.modules.qbittorrent import EXCLUDED_KEYS, QbittorrentModule
@@ -113,3 +114,34 @@ class TestQbittorrentSync:
             with patch.object(mod, '_qbit_post_prefs') as mock_post:
                 mod.sync()
                 mock_post.assert_not_called()
+
+
+class TestQbittorrentPostEncoding:
+    def test_set_preferences_body_is_form_encoded(self, qbittorrent):
+        """H5: values with &, +, % must survive the form decoder."""
+        import urllib.parse
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b""
+
+        def fake_urlopen(req, timeout=0):
+            captured["body"] = req.data.decode()
+            captured["ctype"] = req.get_header("Content-type")
+            return _Resp()
+
+        prefs = {"autorun_program": "/bin/x %F", "announce_ip": "a&b+c"}
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            qbittorrent._qbit_post_prefs(prefs)
+        assert captured["ctype"] == "application/x-www-form-urlencoded"
+        assert "&b" not in captured["body"] and "%F " not in captured["body"]
+        decoded = urllib.parse.parse_qs(captured["body"])
+        assert json.loads(decoded["json"][0]) == prefs

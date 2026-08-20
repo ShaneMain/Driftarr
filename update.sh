@@ -18,8 +18,9 @@ set -euo pipefail
 #   5. New files from upstream → accepted automatically
 #
 # Core vs User file classification:
-#   Core (upstream wins):  deploy.sh, setup.sh, update.sh, common.yml (root),
-#                          .github/*, configs/sync/*, configs/Dockerfile,
+#   Core (upstream wins):  deploy.sh, deploy/*, setup.sh, update.sh,
+#                          common.yml (root), .github/*, .githooks/*, scripts/*,
+#                          tests/*, configs/sync/*, configs/Dockerfile,
 #                          configs/run-export.sh, docs/*, LICENSE, README.md
 #   User (yours wins):     docker-compose.yml (all), */common.yml (stack-level),
 #                          */docker-compose.yml, monitoring/prometheus.yml,
@@ -48,12 +49,16 @@ REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # Uses git pathspec / fnmatch-style matching.
 CORE_PATTERNS=(
   "deploy.sh"
+  "deploy/*"
   "setup.sh"
   "update.sh"
   "common.yml"
   "LICENSE"
   "README.md"
   ".github/*"
+  ".githooks/*"
+  "scripts/*"
+  "tests/*"
   "configs/sync/*"
   "configs/Dockerfile"
   "configs/run-export.sh"

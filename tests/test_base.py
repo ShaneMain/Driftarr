@@ -1,11 +1,13 @@
 """Tests for AppModule base class (configs/sync/base.py)."""
 
+import io
 import os
+import urllib.error
 from unittest.mock import patch
 
 import pytest
 
-from configs.sync.base import AppModule
+from configs.sync.base import REDACTED, AppModule, AuthError, is_secret_sentinel
 
 
 class TestAppModuleInit:
@@ -153,9 +155,42 @@ class TestExpandEnv:
             )
             assert result == {"Server.Username": "alice", "Server.Password": "pw"}
 
-    def test_missing_var_becomes_empty_string(self):
+    def test_missing_var_left_unexpanded(self):
+        """C1: an unset var must not silently become "" (wiped live secrets)."""
         with patch.dict(os.environ, {}, clear=True):
-            assert AppModule.expand_env("${NOT_SET}") == ""
+            assert AppModule.expand_env("${NOT_SET}") == "${NOT_SET}"
+
+    def test_empty_var_left_unexpanded(self):
+        """compose passes ${VAR:-} — empty is as good as unset."""
+        with patch.dict(os.environ, {"EMPTY": ""}):
+            assert AppModule.expand_env("key=${EMPTY}") == "key=${EMPTY}"
+
+    def test_has_placeholder_and_unresolved_vars(self):
+        with patch.dict(os.environ, {"A": "1"}, clear=True):
+            out = AppModule.expand_env({"a": "${A}", "b": ["${B}"], "c": {"d": "${C}-${B}"}})
+        assert AppModule.has_placeholder(out["a"]) is False
+        assert AppModule.has_placeholder(out["b"][0]) is True
+        assert AppModule.has_placeholder(42) is False
+        assert AppModule.unresolved_vars(out) == {"B", "C"}
+
+    def test_expand_env_or_redact_warns_once_and_redacts(self, radarr, capsys):
+        with patch.dict(os.environ, {"A": "1"}, clear=True):
+            out = radarr.expand_env_or_redact({"a": "${A}", "b": "${B}", "n": 3, "l": ["${C}"]})
+        assert out == {"a": "1", "b": REDACTED, "n": 3, "l": [REDACTED]}
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if "WARNING" in ln]
+        assert len(lines) == 1
+        assert "B, C" in lines[0]
+
+    def test_expand_env_or_redact_silent_when_resolved(self, radarr, capsys):
+        with patch.dict(os.environ, {"A": "1"}):
+            assert radarr.expand_env_or_redact({"a": "${A}"}) == {"a": "1"}
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_is_secret_sentinel(self):
+        assert is_secret_sentinel("<REDACTED>")
+        assert is_secret_sentinel("********")
+        assert not is_secret_sentinel("real")
+        assert not is_secret_sentinel(None)
 
     def test_non_strings_pass_through(self):
         with patch.dict(os.environ, {"X": "1"}):
@@ -231,3 +266,92 @@ class TestReconcileDestructive:
         assert mod._is_sensitive("Server1.Password")
         assert mod._is_sensitive("API_TOKEN")
         assert not mod._is_sensitive("Server1.Host")
+
+
+class TestApiKeyPublishing:
+    """C1: a key resolved from config.xml must be visible to ${VAR} expansion."""
+
+    def test_config_xml_key_published_to_env(self, data_dir, tmp_path):
+        xml = tmp_path / "config.xml"
+        xml.write_text("<Config><ApiKey>fromxml</ApiKey></Config>")
+
+        class M(AppModule):
+            name = "m"
+            key_env = "PUBLISH_TEST_KEY"
+            config_xml_path = str(xml)
+
+        with patch.dict(os.environ, {}, clear=True):
+            mod = M(data_dir)
+            assert mod.api_key == "fromxml"
+            assert os.environ["PUBLISH_TEST_KEY"] == "fromxml"
+            assert AppModule.expand_env("${PUBLISH_TEST_KEY}") == "fromxml"
+
+    def test_env_key_not_overwritten(self, data_dir):
+        with patch.dict(os.environ, {"RADARR_API_KEY": "fromenv"}):
+            from configs.sync.modules.radarr import RadarrModule
+
+            RadarrModule(data_dir)
+            assert os.environ["RADARR_API_KEY"] == "fromenv"
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("http://x", code, "nope", {}, io.BytesIO(b"denied"))
+
+
+class TestAuthFailure:
+    """M8: a rejected key is reported as such, not as 'unreachable'."""
+
+    def test_request_raises_auth_error(self, radarr):
+        with patch("urllib.request.urlopen", side_effect=_http_error(401)):
+            with pytest.raises(AuthError, match="401"):
+                radarr.api_get("x")
+
+    def test_wait_until_ready_stops_immediately_on_401(self, radarr, capsys):
+        with patch("urllib.request.urlopen", side_effect=_http_error(401)), \
+             patch("socket.getaddrinfo", return_value=[]), \
+             patch("time.sleep") as sleep:
+            assert radarr.wait_until_ready(timeout=60) is False
+        sleep.assert_not_called()
+        assert "rejected API key (HTTP 401)" in capsys.readouterr().out
+
+
+class TestApiPrefix:
+    def test_default_prefix_v3(self, radarr):
+        with patch.object(radarr, "_request") as req:
+            radarr.api_get("x")
+        assert req.call_args[0][0] == "http://localhost:7878/api/v3/x"
+
+    def test_subclass_prefix(self, data_dir):
+        from configs.sync.modules.bazarr import BazarrModule
+        from configs.sync.modules.prowlarr import ProwlarrModule
+
+        with patch.dict(os.environ, {"BAZARR_API_KEY": "k", "PROWLARR_API_KEY": "k"}):
+            b = BazarrModule(data_dir)
+            pr = ProwlarrModule(data_dir)
+        with patch.object(b, "_request") as req:
+            b.api_get("system/settings")
+        assert req.call_args[0][0] == "http://bazarr:6767/api/system/settings"
+        with patch.object(pr, "_request") as req:
+            pr.api_put("config/host", {})
+        assert req.call_args[0][0] == "http://prowlarr:9696/api/v1/config/host"
+
+
+class TestRunSteps:
+    """H6: one failing step must not skip the rest, but must still fail the module."""
+
+    def test_continues_after_failure_and_raises_summary(self, radarr, capsys):
+        calls = []
+
+        def ok():
+            calls.append("ok")
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        with pytest.raises(RuntimeError, match=r"1/3 step\(s\) failed.*first: kaboom"):
+            radarr.run_steps([("first", boom), ("second", ok), ("third", ok)])
+        assert calls == ["ok", "ok"]
+        assert "ERROR in first: kaboom" in capsys.readouterr().out
+
+    def test_no_raise_when_all_succeed(self, radarr):
+        radarr.run_steps([("a", lambda: None)])

@@ -34,6 +34,14 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 [ -f "$REPO_DIR/.env" ] && . "$REPO_DIR/.env"
 
 DNS_IP="${DNS_SERVER_IP:?DNS_SERVER_IP not set (see .env.example)}"
+
+# Probe-tool preflight. Without dig both probes read as "failed" on a healthy
+# AdGuard and the escalation ladder below would restart/recreate it forever.
+if ! command -v dig >/dev/null 2>&1; then
+  logger -t dns-watchdog "FATAL: dig not installed (apt: bind9-dnsutils / dnf: bind-utils) — watchdog disabled"
+  echo "dns-watchdog: dig not installed; install bind9-dnsutils (Debian/Ubuntu) or bind-utils (Fedora)" >&2
+  exit 1
+fi
 REWRITE_NAME=watchdog-probe.home
 STATE_DIR="$HOME/.local/state/dns-watchdog"
 PROM_DIR=/var/lib/node-exporter

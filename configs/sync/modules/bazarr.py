@@ -19,14 +19,10 @@ cannot be pushed.
 
 import copy
 import json
-import time
-import urllib.error
 import urllib.request
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
-from configs.sync.base import AppModule
-
-REDACTED = "<REDACTED>"
+from configs.sync.base import REDACTED, AppModule
 
 SECRET_KEY_PATTERNS = (
     "password",
@@ -65,11 +61,7 @@ class BazarrModule(AppModule):
     key_env = "BAZARR_API_KEY"
     default_url = "http://bazarr:6767"
     expected_files = ["settings.json"]
-
-    # ── API helpers (Bazarr uses /api/, not /api/v3/) ──
-
-    def api_get(self, endpoint: str):
-        return self._request(f"{self.url}/api/{endpoint}")
+    api_prefix = "api"  # Bazarr is /api/, not /api/v3/
 
     def _post_settings_form(self, changed_sections: dict):
         """POST settings as form-encoded data.
@@ -112,57 +104,6 @@ class BazarrModule(AppModule):
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             resp.read()
-
-    # ── Health (override — Bazarr uses /api/system/status) ──
-
-    def wait_until_ready(self, timeout: int = 60) -> bool:
-        if not self.api_key:
-            self.log(f"no API key configured ({self.key_env}), skipping")
-            return False
-
-        import socket
-
-        parsed = urlparse(self.url)
-        host = parsed.hostname
-        port = parsed.port or 80
-
-        try:
-            socket.setdefaulttimeout(5)
-            socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-        except (socket.gaierror, OSError):
-            self.log(f"ERROR: {self.name} DNS lookup failed for {host}")
-            return False
-        finally:
-            socket.setdefaulttimeout(None)
-
-        self.log(f"waiting for {self.name}...")
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                req = urllib.request.Request(
-                    f"{self.url}/api/system/status",
-                    headers=self._headers(),
-                )
-                with urllib.request.urlopen(req, timeout=5):
-                    self.log(f"{self.name} ready")
-                    return True
-            except Exception:
-                pass
-            time.sleep(1)
-        self.log(f"ERROR: {self.name} not ready after {timeout}s")
-        return False
-
-    def is_reachable(self) -> bool:
-        try:
-            req = urllib.request.Request(
-                f"{self.url}/api/system/status",
-                headers=self._headers(),
-            )
-            with urllib.request.urlopen(req, timeout=5):
-                return True
-        except (urllib.error.URLError, OSError):
-            self.log(f"ERROR: not reachable at {self.url}")
-            return False
 
     # ── Secret redaction ──────────────────────────────
 
@@ -267,22 +208,11 @@ class BazarrModule(AppModule):
     def _sync_settings(self):
         desired = self.load_json("settings.json")
         if desired is None:
-            if self.is_bootstrap_mode():
-                self.log("BOOTSTRAP: no settings exported yet — skipping sync (run export first)")
-                return
-            desired = {}
-
-        if not self.wait_until_ready():
             return
 
-        # Expand ${VAR} placeholders from the environment.
-        # If an env var is unset, expand_env replaces with "" — convert those
-        # back to <REDACTED> so merge-before-write preserves the live secret.
-        desired = self.expand_env(desired)
-        for (section, key), _env_var in SECRET_ENV_MAPPING.items():
-            sec = desired.get(section)
-            if isinstance(sec, dict) and sec.get(key) == "":
-                sec[key] = REDACTED
+        # Expand ${VAR} placeholders; unresolved ones become <REDACTED> so
+        # merge-before-write preserves the live secret.
+        desired = self.expand_env_or_redact(desired)
 
         current = self.api_get("system/settings")
         merged = self._merge_keeping_secrets(current, desired)

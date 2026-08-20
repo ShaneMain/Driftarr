@@ -6,7 +6,7 @@ naming, media management, root folders, download client categories.
 
 import copy
 
-from configs.sync.base import AppModule
+from configs.sync.base import AppModule, is_secret_sentinel
 
 
 class RadarrModule(AppModule):
@@ -146,14 +146,18 @@ class RadarrModule(AppModule):
     # ── Sync ──────────────────────────────────────────
 
     def sync(self):
-        self._sync_custom_formats()
-        self._sync_profile_scores()
-        self._sync_quality_definitions()
-        self._sync_naming()
-        self._sync_media_management()
-        self._sync_root_folders()
-        self._sync_download_clients()
-        self._sync_notifications()
+        # Each step runs even if an earlier one fails; errors are collected
+        # and raised together so the deploy still fails (see base.run_steps).
+        self.run_steps([
+            ("custom formats", self._sync_custom_formats),
+            ("profile scores", self._sync_profile_scores),
+            ("quality definitions", self._sync_quality_definitions),
+            ("naming", self._sync_naming),
+            ("media management", self._sync_media_management),
+            ("root folders", self._sync_root_folders),
+            ("download clients", self._sync_download_clients),
+            ("notifications", self._sync_notifications),
+        ])
 
     def _strip_cf(self, cf):
         return {
@@ -180,10 +184,7 @@ class RadarrModule(AppModule):
     def _sync_custom_formats(self):
         desired = self.load_json("custom-formats.json")
         if desired is None:
-            if self.is_bootstrap_mode():
-                self.log("BOOTSTRAP: no configs exported yet — skipping sync (run export first)")
-                return
-            desired = []  # Missing file = delete all from API
+            return
 
         remote_cfs = self.api_get("customformat")
         remote_by_name = {cf["name"]: cf for cf in remote_cfs}
@@ -217,6 +218,7 @@ class RadarrModule(AppModule):
                 else:
                     self.api_delete(f"customformat/{rcf['id']}")
                     self.log(f"CF: deleted '{rcf['name']}'")
+                changes += 1
 
         if changes == 0:
             self.log("custom formats: in sync")
@@ -237,10 +239,7 @@ class RadarrModule(AppModule):
     def _sync_profile_scores(self):
         desired = self.load_json("profile-scores.json")
         if desired is None:
-            if self.is_bootstrap_mode():
-                self.log("BOOTSTRAP: no configs exported yet — skipping sync (run export first)")
-                return
-            desired = {}  # Missing file = reset all scores / delete extra profiles
+            return
 
         profiles = self.api_get("qualityprofile")
         profiles_by_name = {p["name"]: p for p in profiles}
@@ -297,14 +296,12 @@ class RadarrModule(AppModule):
             elif not updated:
                 self.log(f"profile '{pname}': in sync")
 
-        # Delete profiles not in desired JSON
+        # Profiles not in the file are left alone: deleting one that movies
+        # still reference returns 400, and the file only captures scores, so
+        # the engine has no authority over profile existence.
         for profile in profiles:
             if profile["name"] not in desired:
-                if self.mode == "diff":
-                    self.log(f"profile '{profile['name']}': would delete")
-                else:
-                    self.api_delete(f"qualityprofile/{profile['id']}")
-                    self.log(f"profile '{profile['name']}': deleted")
+                self.log(f"profile '{profile['name']}': not in profile-scores.json — left in place")
 
     def _sync_quality_definitions(self):
         desired = self.load_json("quality-definitions.json")
@@ -343,14 +340,14 @@ class RadarrModule(AppModule):
             return
 
         remote = self.api_get("config/naming")
-        remote_stripped = {k: v for k, v in remote.items() if k != "id"}
-
-        if remote_stripped != desired:
+        # Compare only declared keys so a newer *arr adding fields doesn't
+        # cause a perpetual diff; PUT remote+desired so those fields survive.
+        if any(remote.get(k) != v for k, v in desired.items() if k != "id"):
             if self.mode == "diff":
                 self.log("naming: would update")
             else:
-                desired["id"] = remote["id"]
-                self.api_put(f"config/naming/{remote['id']}", desired)
+                payload = {**remote, **desired, "id": remote["id"]}
+                self.api_put(f"config/naming/{remote['id']}", payload)
                 self.log("naming: updated")
         else:
             self.log("naming: in sync")
@@ -361,14 +358,14 @@ class RadarrModule(AppModule):
             return
 
         remote = self.api_get("config/mediamanagement")
-        remote_stripped = {k: v for k, v in remote.items() if k != "id"}
-
-        if remote_stripped != desired:
+        # Compare only declared keys so a newer *arr adding fields doesn't
+        # cause a perpetual diff; PUT remote+desired so those fields survive.
+        if any(remote.get(k) != v for k, v in desired.items() if k != "id"):
             if self.mode == "diff":
                 self.log("media management: would update")
             else:
-                desired["id"] = remote["id"]
-                self.api_put(f"config/mediamanagement/{remote['id']}", desired)
+                payload = {**remote, **desired, "id": remote["id"]}
+                self.api_put(f"config/mediamanagement/{remote['id']}", payload)
                 self.log("media management: updated")
         else:
             self.log("media management: in sync")
@@ -376,10 +373,7 @@ class RadarrModule(AppModule):
     def _sync_root_folders(self):
         desired = self.load_json("root-folders.json")
         if desired is None:
-            if self.is_bootstrap_mode():
-                self.log("BOOTSTRAP: no configs exported yet — skipping sync (run export first)")
-                return
-            desired = []  # Missing file = delete all from API
+            return
 
         remote_rfs = self.api_get("rootfolder")
         remote_by_path = {rf["path"]: rf for rf in remote_rfs}
@@ -457,6 +451,8 @@ class RadarrModule(AppModule):
                         updated = True
 
                 for k, v in desired_fields.items():
+                    if is_secret_sentinel(v):
+                        continue  # keep the live secret
                     replaced = False
                     for f in existing.get("fields", []):
                         if f["name"] == k:
@@ -495,6 +491,21 @@ class RadarrModule(AppModule):
                 new_entry["name"] = name
                 for k, v in desired_toggles.items():
                     new_entry[k] = v
+                # A masked secret can't be POSTed: dropping the field makes
+                # *arr's create-time validation/connection test fail (400)
+                # on every deploy. Skip the entry instead — not an error.
+                masked = sorted(
+                    k for k, v in desired_fields.items()
+                    if is_secret_sentinel(v) or self.has_placeholder(v)
+                )
+                if masked:
+                    self.log(
+                        f"WARNING: cannot create notification '{name}': secret field "
+                        f"'{masked[0]}' is masked in notifications.json — create it once in "
+                        "the UI with this exact name (or set a ${VAR} placeholder), after "
+                        "which sync will manage it"
+                    )
+                    continue
                 for f in new_entry.get("fields", []):
                     if f["name"] in desired_fields:
                         f["value"] = desired_fields[f["name"]]

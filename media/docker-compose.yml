@@ -88,4 +88,18 @@ services:
       SEERR_API_KEY: ${SEERR_API_KEY:-}
       BAZARR_API_KEY: ${BAZARR_API_KEY:-}
       PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
+      # Radarr/Sonarr modules read their key from config.xml, but other
+      # modules' files reference ${RADARR_API_KEY}/${SONARR_API_KEY}
+      # (Bazarr integration keys) — pass them so placeholders expand.
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      # Prowlarr and qBittorrent live in the `downloads` project inside
+      # gluetun's network namespace — the Docker DNS names prowlarr/qbittorrent
+      # don't resolve from this project. Reach them via the ports gluetun
+      # publishes on the host (same as configs/run-export.sh does), through
+      # the host-gateway alias below.
+      PROWLARR_URL: ${PROWLARR_URL:-http://host.docker.internal:9696}
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-http://host.docker.internal:8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: "no"

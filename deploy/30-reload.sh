@@ -44,6 +44,8 @@ while IFS= read -r file; do
   [ -z "$patterns" ] && continue
 
   rel_path="${file#"$dir"/}"
+  # set -f: don't glob-expand the patterns against cwd (see 10-detect.sh)
+  set -f
   for pattern in $patterns; do
     # shellcheck disable=SC2254
     case "$rel_path" in
@@ -66,4 +68,5 @@ while IFS= read -r file; do
         ;;
     esac
   done
+  set +f
 done <<< "$CHANGED"

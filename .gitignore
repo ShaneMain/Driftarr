@@ -9,3 +9,5 @@ __pycache__/
 .deploy.lock
 .deploy-log
 .last-deployed
+# config-sync loop-prevention marker (written by sync.py, read by export.py)
+configs/data/.sync-ran

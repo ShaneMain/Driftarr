@@ -35,15 +35,18 @@ jobs:
     if: false
     steps:
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3.3.0
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
       - name: Deploy via SSH
+        # Secrets are passed through env, never interpolated into the script
+        # body, so a value containing shell metacharacters can't become code.
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           mkdir -p ~/.ssh
 
@@ -51,7 +54,7 @@ jobs:
           # proceeding without it just dies later with a cryptic SSH error)
           ts_ok=false
           for i in 1 2 3 4 5; do
-            if tailscale ping --timeout=5s ${{ secrets.DEPLOY_HOST }} >/dev/null 2>&1; then
+            if tailscale ping --timeout=5s "$DEPLOY_HOST" >/dev/null 2>&1; then
               echo "Tailscale connectivity confirmed"
               ts_ok=true
               break
@@ -67,7 +70,7 @@ jobs:
           # Pre-scan the host key (retry in case of transient failure)
           scan_ok=false
           for i in 1 2 3; do
-            if ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null; then
+            if ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
               if [ -s ~/.ssh/known_hosts ]; then
                 echo "Host key scanned successfully"
                 scan_ok=true
@@ -86,5 +89,16 @@ jobs:
           eval "$(ssh-agent -s)"
           echo "$SSH_KEY" | ssh-add -
 
-          ssh -o RequestTTY=no \
-              deploy@${{ secrets.DEPLOY_HOST }} 2>&1
+          # The server's authorized_keys `command=` / sshd ForceCommand runs
+          # deploy.sh regardless of what is requested here, so send an explicit
+          # token anyway: if the forced command is ever lost, a plain shell
+          # fails on "deploy: command not found" instead of exiting 0 on EOF.
+          # Belt and braces: also require one of the pipeline's known end-of-run
+          # lines — the summary banner (deploy/90-summary.sh) or an intentional
+          # early exit (deploy/00-pull.sh) — so a silent no-op can't go green.
+          set -o pipefail
+          ssh -o RequestTTY=no "deploy@$DEPLOY_HOST" deploy 2>&1 | tee deploy-output.log
+          if ! grep -qE 'Deploy Summary|nothing to deploy|skipping deploy' deploy-output.log; then
+            echo "::error::deploy.sh produced no recognisable output — the forced command did not run on the server"
+            exit 1
+          fi

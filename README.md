@@ -150,7 +150,7 @@ For manual setup, see [docs/server-setup.md](docs/server-setup.md). For common i
 
 1. `git pull --ff-only` — fast-forward only, fails cleanly if the branch has diverged
 2. Diffs `HEAD~1..HEAD` to identify changed files
-3. Maps file paths to stacks — any directory containing a `docker-compose.yml` is auto-discovered
+3. Maps file paths to stacks — any directory containing a `docker-compose.yml` **and listed in the root `docker-compose.yml` `include:` block** is a deployable stack; commenting a stack out of that list disables it
 4. For each affected stack:
    - Snapshots running container states (before)
    - Runs `docker compose up -d` (with `build` for image-building stacks)
@@ -162,7 +162,7 @@ For manual setup, see [docs/server-setup.md](docs/server-setup.md). For common i
 Special behaviors:
 - `common.yml` changes trigger all stacks (fleet-wide defaults)
 - `configs/sync/` or `configs/Dockerfile` changes trigger a config-sync image rebuild
-- Auto-export commits (`chore(configs): auto-export`) are detected and skipped — the configs are already live
+- Pushes whose only changes are under `configs/data/` (auto-exports) are skipped — the configs are already live. A real change arriving in the same pull is still deployed
 - If `git pull` is a no-op (commit pushed from the server itself), falls back to `HEAD~1..HEAD` so the deploy still runs
 
 ### Deploy Output
@@ -242,13 +242,14 @@ The repo is the single source of truth. `configs/data/` ships empty — the firs
 - **Sync** (push): runs as a one-shot container on every deploy (diff-agnostic, idempotent), reads JSON from `configs/data/` and pushes to service APIs. If a file is missing, all corresponding resources are deleted from the API.
 - **Export** (pull): runs on a host cron, pulls current config from APIs, diffs against git, and commits/pushes changes
 
-Fully declarative: the JSON files define the desired state. Resources in the API that aren't in the JSON get deleted. Singleton configs (naming, media management) skip when the file is absent.
+Declarative for collections: the JSON files define the desired state and resources in the API that aren't in the JSON get deleted (quality profiles are the exception — extras are logged, never deleted). Singleton configs (naming, media management) and any collection whose file is absent are skipped, never wiped. Secret fields are exported as `<REDACTED>` or `${VAR}` placeholders; a placeholder whose variable is unset is left alone rather than written as an empty string.
 
 Loop prevention:
 1. Sync writes a marker file — export skips if the marker is less than 5 minutes old
-2. `deploy.sh` detects auto-export commits and skips the deploy (configs are already live)
+2. `deploy.sh` skips a deploy whose diff is confined to `configs/data/` (configs are already live)
+3. `run-export.sh` shares `deploy.sh`'s lock and skips while a deploy is running, so an export can never commit mid-rollback state
 
-What gets synced: custom formats, quality profile scores, quality definitions, naming formats, media management settings, root folders, and download client post-import categories.
+What gets synced: custom formats, quality profile scores, quality definitions, naming formats, media management settings, root folders, download client post-import categories, and notifications (Radarr/Sonarr); Bazarr settings and language profiles; Prowlarr indexers and host config; qBittorrent preferences.
 
 ### Plugin Architecture
 
@@ -305,8 +306,8 @@ Two independent layers catch leaked secrets at different points:
 
 1. Create a directory with a `docker-compose.yml`
 2. Extend from `common.yml` (or create a stack-level `common.yml` for shared defaults)
-3. Optionally add it to the root `docker-compose.yml` includes
-4. Push — `deploy.sh` auto-discovers it from the changed file paths
+3. Add it to the root `docker-compose.yml` `include:` list — that list is the on/off switch
+4. Push — `deploy.sh` maps the changed file paths to the stack
 
 ```yaml
 # my-stack/docker-compose.yml

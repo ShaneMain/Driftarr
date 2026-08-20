@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 # pre-commit — block the commit if any staged file contains a literal .env value.
+# Scans the staged index (git show :path), not the working tree.
 # Enabled by `git config core.hooksPath .githooks` (run setup.sh to set it).
 exec "$(git rev-parse --show-toplevel)/scripts/secret-guard.sh" staged

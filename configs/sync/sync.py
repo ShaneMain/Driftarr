@@ -27,7 +27,10 @@ from configs.sync.base import AppModule, discover_modules, log
 
 CONFIGS_DIR = pathlib.Path("/configs")
 DATA_DIR = CONFIGS_DIR / "data"
-SYNC_MARKER = pathlib.Path("/tmp/config-sync-ran")
+# Loop-prevention marker for export.py. Lives in the bind-mounted data dir
+# (the only path this container shares with the host cron) — a /tmp path
+# here would never be seen by the host-side export. Git-ignored.
+SYNC_MARKER = DATA_DIR / ".sync-ran"
 
 # Deploy-scale retry window for modules that are slow to become reachable
 # (container restarts, image pulls, healthcheck warm-up).
@@ -98,11 +101,13 @@ def main():
         )
 
     # Leave marker so export knows we just ran (even on partial failure —
-    # a simultaneous export would only reinforce live state).
-    try:
-        SYNC_MARKER.touch()
-    except OSError:
-        pass
+    # a simultaneous export would only reinforce live state). Not in diff
+    # mode: a dry run changes nothing, so it must not suppress an export.
+    if mode != "diff":
+        try:
+            SYNC_MARKER.touch()
+        except OSError:
+            pass
 
     if unreachable_required or sync_errors:
         log("config-sync", "FAIL: declared config did not apply cleanly")

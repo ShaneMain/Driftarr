@@ -10,6 +10,7 @@ The engine auto-discovers modules and calls these methods.
 import json
 import os
 import pathlib
+import re
 import time
 import urllib.error
 import urllib.request
@@ -20,12 +21,32 @@ def log(prefix: str, msg: str):
     print(f"[{prefix}] {msg}", flush=True)
 
 
+# Placeholder values that stand in for a secret in exported files. They must
+# never be written to a live service: <REDACTED> is what our exporters write,
+# "********" is what *arr APIs return for masked fields.
+REDACTED = "<REDACTED>"
+MASKED = "********"
+SECRET_SENTINELS = frozenset({REDACTED, MASKED})
+
+_PLACEHOLDER_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+
+
+def is_secret_sentinel(value: Any) -> bool:
+    """True if value is a redaction/masking placeholder (never send to an API)."""
+    return isinstance(value, str) and value in SECRET_SENTINELS
+
+
+class AuthError(RuntimeError):
+    """The service rejected our API key (HTTP 401/403)."""
+
+
 class AppModule:
     name: str = ""  # e.g. "radarr" — also the data subdirectory name
     url_env: str = ""  # env var for URL, e.g. "RADARR_URL"
     key_env: str = ""  # env var for API key, e.g. "RADARR_API_KEY"
     default_url: str = ""  # fallback URL if env var not set
     config_xml_path: str = ""  # optional: path to config.xml for API key
+    api_prefix: str = "api/v3"  # URL path prefix for api_* helpers and system/status
     expected_files: list[str] = []  # files that should exist after export (for bootstrap detection)
 
     def __init__(self, data_dir: pathlib.Path, mode: str = "sync"):
@@ -34,6 +55,11 @@ class AppModule:
         self.url = os.environ.get(self.url_env, self.default_url)
         self.api_key = os.environ.get(self.key_env, "")
         self._read_api_key_fallback()
+        # Publish the resolved key so ${KEY_ENV} placeholders in other modules'
+        # files (Bazarr's radarr.apikey, Tdarr's radarr_api_key, ...) expand
+        # even when the key only came from config.xml and not from .env.
+        if self.api_key and self.key_env and not os.environ.get(self.key_env):
+            os.environ[self.key_env] = self.api_key
 
     def _read_api_key_fallback(self):
         if self.api_key or not self.config_xml_path:
@@ -64,19 +90,22 @@ class AppModule:
                 raw = resp.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"{method} {url} → {e.code}: {e.read().decode()[:200]}") from e
+            msg = f"{method} {url} → {e.code}: {e.read().decode()[:200]}"
+            if e.code in (401, 403):
+                raise AuthError(msg) from e
+            raise RuntimeError(msg) from e
 
     def api_get(self, endpoint: str) -> Any:
-        return self._request(f"{self.url}/api/v3/{endpoint}")
+        return self._request(f"{self.url}/{self.api_prefix}/{endpoint}")
 
     def api_put(self, endpoint: str, data: Any) -> Any:
-        return self._request(f"{self.url}/api/v3/{endpoint}", "PUT", data)
+        return self._request(f"{self.url}/{self.api_prefix}/{endpoint}", "PUT", data)
 
     def api_post(self, endpoint: str, data: Any) -> Any:
-        return self._request(f"{self.url}/api/v3/{endpoint}", "POST", data)
+        return self._request(f"{self.url}/{self.api_prefix}/{endpoint}", "POST", data)
 
     def api_delete(self, endpoint: str):
-        self._request(f"{self.url}/api/v3/{endpoint}", "DELETE")
+        self._request(f"{self.url}/{self.api_prefix}/{endpoint}", "DELETE")
 
     # ── Health ────────────────────────────────────────
 
@@ -107,12 +136,17 @@ class AppModule:
         while time.time() < deadline:
             try:
                 req = urllib.request.Request(
-                    f"{self.url}/api/v3/system/status",
+                    f"{self.url}/{self.api_prefix}/system/status",
                     headers=self._headers(),
                 )
                 with urllib.request.urlopen(req, timeout=5):
                     self.log(f"{self.name} ready")
                     return True
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    # Wrong/rotated key — retrying for minutes only hides the cause.
+                    self.log(f"ERROR: {self.name} rejected API key (HTTP {e.code}) — check {self.key_env}")
+                    return False
             except Exception:
                 pass
             time.sleep(1)
@@ -122,7 +156,7 @@ class AppModule:
     def is_reachable(self) -> bool:
         try:
             req = urllib.request.Request(
-                f"{self.url}/api/v3/system/status",
+                f"{self.url}/{self.api_prefix}/system/status",
                 headers=self._headers(),
             )
             with urllib.request.urlopen(req, timeout=5):
@@ -163,7 +197,7 @@ class AppModule:
     def load_json(self, filename: str) -> Any | None:
         path = self.data_dir / filename
         if not path.exists():
-            self.log(f"{filename}: not found — treating as empty (delete all)")
+            self.log(f"{filename}: not found — skipping")
             return None
         self.log(f"loaded {filename} ({path.stat().st_size} bytes)")
         with open(path) as f:
@@ -182,15 +216,17 @@ class AppModule:
         """Replace ${VAR} placeholders in strings with environment values.
 
         Walks dicts/lists recursively. Non-string leaves pass through unchanged.
-        Missing env vars expand to empty string (matches shell behavior).
+        A placeholder whose variable is unset *or empty* is left untouched —
+        callers must check has_placeholder()/unresolved_vars() and skip such
+        values rather than write "" into a live service.
         """
-        import re
 
-        pattern = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+        def repl(m: re.Match) -> str:
+            return os.environ.get(m.group(1)) or m.group(0)
 
         def sub(v: Any) -> Any:
             if isinstance(v, str):
-                return pattern.sub(lambda m: os.environ.get(m.group(1), ""), v)
+                return _PLACEHOLDER_RE.sub(repl, v)
             if isinstance(v, dict):
                 return {k: sub(x) for k, x in v.items()}
             if isinstance(v, list):
@@ -198,6 +234,74 @@ class AppModule:
             return v
 
         return sub(value)
+
+    @staticmethod
+    def has_placeholder(value: Any) -> bool:
+        """True if value is a string still containing a ${VAR} placeholder."""
+        return isinstance(value, str) and _PLACEHOLDER_RE.search(value) is not None
+
+    @staticmethod
+    def unresolved_vars(value: Any) -> set[str]:
+        """Names of every ${VAR} placeholder left anywhere inside value."""
+        found: set[str] = set()
+
+        def walk(v: Any):
+            if isinstance(v, str):
+                found.update(_PLACEHOLDER_RE.findall(v))
+            elif isinstance(v, dict):
+                for x in v.values():
+                    walk(x)
+            elif isinstance(v, list):
+                for x in v:
+                    walk(x)
+
+        walk(value)
+        return found
+
+    def expand_env_or_redact(self, value: Any) -> Any:
+        """expand_env(), then replace any still-unresolved string with REDACTED.
+
+        Logs a single WARNING naming the missing variables. Callers already
+        skip REDACTED values (merge-before-write), so the live value survives.
+        """
+        expanded = self.expand_env(value)
+        missing = self.unresolved_vars(expanded)
+        if not missing:
+            return expanded
+        self.log(
+            f"WARNING: env var(s) not set: {', '.join(sorted(missing))} — "
+            "leaving live value(s) untouched"
+        )
+
+        def sub(v: Any) -> Any:
+            if self.has_placeholder(v):
+                return REDACTED
+            if isinstance(v, dict):
+                return {k: sub(x) for k, x in v.items()}
+            if isinstance(v, list):
+                return [sub(x) for x in v]
+            return v
+
+        return sub(expanded)
+
+    # ── Multi-step sync with error collection ─────────
+
+    def run_steps(self, steps: list[tuple[str, Any]]) -> None:
+        """Run (label, callable) steps in order; one failure doesn't skip the rest.
+
+        Errors are logged as they happen and re-raised together at the end
+        so sync.py still marks the module failed (deploy fails) while every
+        independent step had its chance to apply.
+        """
+        errors: list[str] = []
+        for label, fn in steps:
+            try:
+                fn()
+            except Exception as e:
+                self.log(f"ERROR in {label}: {e}")
+                errors.append(f"{label}: {e}")
+        if errors:
+            raise RuntimeError(f"{len(errors)}/{len(steps)} step(s) failed — " + "; ".join(errors))
 
     # ── Destructive-write reconciliation ──────────────
     #

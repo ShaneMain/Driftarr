@@ -32,7 +32,12 @@ _outcome="SUCCEEDED"
 [ -n "$FAILED" ] && _outcome="FAILED"
 printf '%s\t%s..%s\t%s\n' "$(date -Is 2>/dev/null || date)" "${BEFORE:0:7}" "${AFTER:0:7}" "$_outcome" \
   >> "$REPO_DIR/.deploy-log" 2>/dev/null || true
-printf '%s\n' "$AFTER" > "$REPO_DIR/.last-deployed" 2>/dev/null || true
+# .last-deployed only advances on a fully clean run: 00-pull uses it as BEFORE,
+# so a failed or rolled-back stack stays inside the next run's diff range and
+# is retried instead of being forgotten.
+if [ -z "$FAILED" ] && [ -z "$ROLLED_BACK" ]; then
+  printf '%s\n' "$AFTER" > "$REPO_DIR/.last-deployed" 2>/dev/null || true
+fi
 
 if [ -n "$FAILED" ]; then
   err "Failed:$FAILED"

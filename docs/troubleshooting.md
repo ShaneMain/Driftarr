@@ -31,7 +31,7 @@ If you pushed from the server itself, the pull is a no-op — the script falls b
 
 ### Auto-export commit triggers a deploy loop
 
-It shouldn't — `deploy.sh` detects commits matching `chore(configs): auto-export` and exits early. If you're seeing loops, check that the commit message format hasn't been changed in `export.py`.
+It shouldn't — `deploy.sh` skips the run when every path in the pulled range is under `configs/data/`, regardless of commit message. If you're seeing loops, check that the export is not also touching files outside `configs/data/`, and that `configs/run-export.sh` can take the deploy lock (`.deploy.lock`).
 
 ## Config Sync
 

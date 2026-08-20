@@ -8,6 +8,7 @@ Categories/tags/seeding rules are managed by qbit_manage, not this module.
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from configs.sync.base import AppModule
@@ -75,7 +76,7 @@ class QbittorrentModule(AppModule):
 
     def _qbit_post_prefs(self, prefs: dict):
         """POST changed preferences. qBit expects form-encoded json= field."""
-        body = f"json={json.dumps(prefs)}".encode()
+        body = urllib.parse.urlencode({"json": json.dumps(prefs)}).encode()
         req = urllib.request.Request(
             f"{self.url}/api/v2/app/setPreferences",
             data=body,

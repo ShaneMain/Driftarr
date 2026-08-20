@@ -4,18 +4,30 @@
 # Sets: STACKS, CONFIG_CHANGES, hot-reload flags
 
 # ── Auto-discover stacks from changed file paths ─────
+# Only stacks listed in the root docker-compose.yml `include:` block are
+# deployable (see enabled_stacks in lib.sh) — commenting a stack out there is
+# the documented way to disable it, and used to be ignored here because
+# discovery went by filesystem glob. Disabled stacks with changes are logged
+# once and skipped; they are also excluded from the fan-out and from drift.
+ENABLED_STACKS=$(enabled_stacks | tr '\n' ' ' | xargs)
+DISABLED_SKIPPED=""
 STACKS=""
 while IFS= read -r file; do
   [ -z "$file" ] && continue
   dir=$(echo "$file" | cut -d/ -f1)
   if [ -f "$REPO_DIR/$dir/docker-compose.yml" ] 2>/dev/null; then
-    STACKS="$STACKS $dir"
+    if echo " $ENABLED_STACKS " | grep -q " $dir "; then
+      STACKS="$STACKS $dir"
+    else
+      case " $DISABLED_SKIPPED " in *" $dir "*) ;; *)
+        log "Skipping $dir — not in root docker-compose.yml include: list (disabled)"
+        DISABLED_SKIPPED="$DISABLED_SKIPPED $dir" ;;
+      esac
+    fi
   fi
   # Root common.yml affects all stacks
   if [ "$file" = "common.yml" ]; then
-    for d in "$REPO_DIR"/*/; do
-      [ -f "$d/docker-compose.yml" ] && STACKS="$STACKS $(basename "$d")"
-    done
+    STACKS="$STACKS $ENABLED_STACKS"
   fi
   # Root docker-compose.yml affects all stacks. Deploy each with its own
   # project (-p <stack>) rather than one merged repo-root project — a root
@@ -23,9 +35,7 @@ while IFS= read -r file; do
   # project name, causing "name already in use" conflicts with the per-stack
   # projects that normally own them.
   if [ "$file" = "docker-compose.yml" ]; then
-    for d in "$REPO_DIR"/*/; do
-      [ -f "$d/docker-compose.yml" ] && STACKS="$STACKS $(basename "$d")"
-    done
+    STACKS="$STACKS $ENABLED_STACKS"
   fi
   # deploy/ module changes don't trigger stack deploys (they're sourced fresh)
 done <<< "$CHANGED"
@@ -36,9 +46,9 @@ STACKS=$(echo "$STACKS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
 DEPLOY_HASHES_DIR="$REPO_DIR/.deploy-hashes"
 mkdir -p "$DEPLOY_HASHES_DIR"
 DRIFT_STACKS=""
-for d in "$REPO_DIR"/*/; do
+for stack in $ENABLED_STACKS; do
+  d="$REPO_DIR/$stack"
   [ -f "$d/docker-compose.yml" ] || continue
-  stack=$(basename "$d")
   repo_hash=$(stack_file_hash "$d")
   stored_hash=$(cat "$DEPLOY_HASHES_DIR/$stack" 2>/dev/null || echo "")
   if [ "$repo_hash" != "$stored_hash" ]; then
@@ -98,12 +108,17 @@ for stack in $STACKS; do
     stack_changed=true
     rel_path="${file#"$stack"/}"
     matched=false
+    # set -f: the unquoted $patterns split must NOT glob-expand against the
+    # cwd (REPO_DIR) — "*.yml" would otherwise become "common.yml docker-compose.yml"
+    # and never match prometheus.yml, silently promoting a reload to a restart.
+    set -f
     for pattern in $patterns; do
       # shellcheck disable=SC2254
       case "$rel_path" in
         $pattern) matched=true ;;
       esac
     done
+    set +f
     [ "$matched" = false ] && all_reloadable=false
   done <<< "$CHANGED"
   if [ "$stack_changed" = true ] && [ "$all_reloadable" = true ]; then

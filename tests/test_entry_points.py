@@ -116,6 +116,30 @@ class TestSyncMain:
         marker.touch.assert_called_once()
 
 
+class TestSyncMarkerLocation:
+    """H1: sync.py (in-container) and export.py (host) must agree on the
+    marker path, and it must live under the bind-mounted data dir."""
+
+    def test_marker_lives_in_data_dir_on_both_sides(self):
+        assert sync_mod.SYNC_MARKER == sync_mod.DATA_DIR / ".sync-ran"
+        assert export_mod.SYNC_MARKER == export_mod.DATA_DIR / ".sync-ran"
+        assert sync_mod.SYNC_MARKER.relative_to(sync_mod.DATA_DIR) == \
+            export_mod.SYNC_MARKER.relative_to(export_mod.DATA_DIR)
+
+    def test_marker_is_gitignored(self):
+        root = export_mod.pathlib.Path(__file__).resolve().parents[1]
+        assert "configs/data/.sync-ran" in (root / ".gitignore").read_text().split()
+
+    def test_diff_mode_does_not_touch_marker(self, data_dir):
+        mod = _make_mod("ok", data_dir)
+        marker = MagicMock()
+        with patch.object(sync_mod, "discover_modules", return_value=[mod]), \
+             patch.object(sync_mod, "SYNC_MARKER", marker), \
+             patch.object(sync_mod.sys, "argv", ["sync", "diff"]):
+            sync_mod.main()
+        marker.touch.assert_not_called()
+
+
 class TestExportMarkerCheck:
     def test_recent_marker_skips_export(self):
         marker = MagicMock()
@@ -179,13 +203,17 @@ class TestExportReadEnvKeys:
         assert os.environ["QUX_API_KEY"] == "abc#123"
         assert os.environ["PLAIN_API_KEY"] == "bare"
 
-    def test_only_sets_api_key_vars(self, tmp_path, monkeypatch):
+    def test_loads_every_key_not_just_api_keys(self, tmp_path, monkeypatch):
+        """M3: modules reference JELLYSEERR_KEY, NZBGET_CONTROL_PASS, ... too."""
         monkeypatch.setattr(export_mod, "REPO_DIR", tmp_path)
-        monkeypatch.delenv("OTHER_VAR", raising=False)
-        self._write(tmp_path, "OTHER_VAR=ignored\nREAL_API_KEY=ok\n")
+        for k in ("JELLYSEERR_KEY", "NZBGET_CONTROL_PASS", "REAL_API_KEY", "EXPORTED_VAR"):
+            monkeypatch.delenv(k, raising=False)
+        self._write(tmp_path, "JELLYSEERR_KEY=j\nNZBGET_CONTROL_PASS=p\nREAL_API_KEY=ok\nexport EXPORTED_VAR=e\n")
         export_mod.read_env_keys()
-        assert "OTHER_VAR" not in os.environ
+        assert os.environ["JELLYSEERR_KEY"] == "j"
+        assert os.environ["NZBGET_CONTROL_PASS"] == "p"
         assert os.environ["REAL_API_KEY"] == "ok"
+        assert os.environ["EXPORTED_VAR"] == "e"
 
     def test_does_not_override_existing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(export_mod, "REPO_DIR", tmp_path)
@@ -249,7 +277,8 @@ class TestExportDiscoverAndExport:
         broken.export.side_effect = RuntimeError("kaboom")
 
         with patch.object(export_mod, "discover_modules", return_value=[good, down, broken]):
-            export_mod.discover_and_export(tmp_path)  # must not raise on broken.export
+            failed = export_mod.discover_and_export(tmp_path)  # must not raise on broken.export
+        assert failed == ["broken"]
 
         good.export.assert_called_once()
         down.export.assert_not_called()
@@ -257,3 +286,63 @@ class TestExportDiscoverAndExport:
         out = capsys.readouterr().out
         assert "down: not reachable" in out
         assert "ERROR exporting broken" in out
+
+
+class TestExportMainMarkerFirst:
+    """Marker must be checked before any file is written, else a skipped
+    commit leaves the worktree dirty for the next deploy."""
+
+    def test_fresh_marker_exits_before_exporting(self, tmp_path, monkeypatch, capsys):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        marker = data_dir / ".sync-ran"
+        marker.touch()
+        monkeypatch.setattr(export_mod, "DRY_RUN", False)
+        monkeypatch.setattr(export_mod, "DATA_DIR", data_dir)
+        monkeypatch.setattr(export_mod, "SYNC_MARKER", marker)
+        with patch.object(export_mod, "read_env_keys"), \
+             patch.object(export_mod, "discover_and_export") as export, \
+             patch.object(export_mod, "git") as git:
+            export_mod.main()
+        export.assert_not_called()
+        git.assert_not_called()
+        assert sorted(p.name for p in data_dir.iterdir()) == [".sync-ran"]
+        assert "skipping export to avoid loop" in capsys.readouterr().out
+
+    def test_old_marker_proceeds(self, tmp_path, monkeypatch):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        marker = data_dir / ".sync-ran"
+        marker.touch()
+        os.utime(marker, (time.time() - 600, time.time() - 600))
+        monkeypatch.setattr(export_mod, "DRY_RUN", False)
+        monkeypatch.setattr(export_mod, "SYNC_MARKER", marker)
+        with patch.object(export_mod, "read_env_keys"), \
+             patch.object(export_mod, "discover_and_export", return_value=[]) as export, \
+             patch.object(export_mod, "git_commit_and_push") as commit:
+            export_mod.main()
+        export.assert_called_once()
+        commit.assert_called_once()
+
+
+class TestExportMainPartialFailure:
+    """M1: a module that raised mid-export leaves a fresh/stale mix — don't commit it."""
+
+    def test_failed_export_skips_commit_and_exits_nonzero(self, monkeypatch):
+        monkeypatch.setattr(export_mod, "DRY_RUN", False)
+        with patch.object(export_mod, "read_env_keys"), \
+             patch.object(export_mod, "discover_and_export", return_value=["radarr"]), \
+             patch.object(export_mod, "git_commit_and_push") as commit, \
+             patch.object(export_mod, "git") as git, \
+             pytest.raises(SystemExit):
+            export_mod.main()
+        commit.assert_not_called()
+        assert ("checkout", "--", "configs/data/") in [c[0] for c in git.call_args_list]
+
+    def test_clean_export_commits(self, monkeypatch):
+        monkeypatch.setattr(export_mod, "DRY_RUN", False)
+        with patch.object(export_mod, "read_env_keys"), \
+             patch.object(export_mod, "discover_and_export", return_value=[]), \
+             patch.object(export_mod, "git_commit_and_push") as commit:
+            export_mod.main()
+        commit.assert_called_once()

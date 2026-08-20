@@ -6,21 +6,17 @@ Prowlarr is an *arr app but uses v1 (not v3 like Radarr/Sonarr).
 Secret handling:
 - Host apiKey is exported as ${PROWLARR_API_KEY}. On sync, expand_env()
   fills it from the environment — enables key rotation + fresh deploys.
-- Indexer secrets (cookies, API keys) are masked as '********' by Prowlarr's
-  API — kept as-is on export, ignored on sync (standard *arr behavior).
+- Indexer secret fields (by name, or any field whose schema `privacy` is
+  not "normal") are exported as <REDACTED>. On sync, fields are merged by
+  name and sentinel values (<REDACTED>, ********) are never sent — the live
+  value is kept on update; on create the field is left for manual entry.
 - Other host secrets (password, proxyPassword) are <REDACTED> and preserved
   via merge-before-write.
 """
 
 import copy
-import time
-import urllib.error
-import urllib.request
-from urllib.parse import urlparse
 
-from configs.sync.base import AppModule
-
-REDACTED = "<REDACTED>"
+from configs.sync.base import REDACTED, AppModule, is_secret_sentinel
 
 HOST_SECRET_KEYS = frozenset(
     {"apiKey", "password", "passwordConfirmation", "proxyPassword", "sslCertPassword"}
@@ -32,36 +28,16 @@ HOST_SECRET_ENV_MAPPING = {
     "apiKey": "PROWLARR_API_KEY",
 }
 
-# Fields stripped from indexer exports (volatile / read-only / huge)
-INDEXER_VOLATILE_FIELDS = frozenset(
-    {
-        "capabilities",
-        "id",
-        "sortName",
-        "encoding",
-        "language",
-        "clamp",
-        "lastFailure",
-        "disabledUntil",
-        "status",
-        "initialState",
-        "priority",
-        "protocol",
-        "privacy",
-        "supportsRss",
-        "supportsSearch",
-        "supportsRedirect",
-        "downloadClientId",
-        "redirect",
-        "tags",
-        "fieldsOrder",
-    }
+# Indexer fields that are secrets regardless of what the definition's
+# `privacy` attribute says (compared case-insensitively).
+INDEXER_SECRET_FIELD_NAMES = frozenset(
+    {"apikey", "api_key", "password", "passkey", "cookie", "token", "username", "uid"}
 )
 
-# Indexer fields that are secrets (masked as ******** by Prowlarr)
-INDEXER_SECRET_FIELD_NAMES = frozenset(
-    {"apiKey", "api_key", "password", "passkey", "cookie", "token", "username", "uid"}
-)
+
+def _is_secret_field(field: dict) -> bool:
+    name = str(field.get("name", "")).lower()
+    return name in INDEXER_SECRET_FIELD_NAMES or field.get("privacy", "normal") != "normal"
 
 
 class ProwlarrModule(AppModule):
@@ -70,71 +46,7 @@ class ProwlarrModule(AppModule):
     key_env = "PROWLARR_API_KEY"
     default_url = "http://prowlarr:9696"
     expected_files = ["indexers.json", "host-config.json"]
-
-    # ── API helpers (Prowlarr uses /api/v1/, not /api/v3/) ──
-
-    def api_get(self, endpoint: str):
-        return self._request(f"{self.url}/api/v1/{endpoint}")
-
-    def api_put(self, endpoint: str, data):
-        return self._request(f"{self.url}/api/v1/{endpoint}", "PUT", data)
-
-    def api_post(self, endpoint: str, data):
-        return self._request(f"{self.url}/api/v1/{endpoint}", "POST", data)
-
-    def api_delete(self, endpoint: str):
-        self._request(f"{self.url}/api/v1/{endpoint}", "DELETE")
-
-    # ── Health (override — Prowlarr uses /api/v1/system/status) ──
-
-    def wait_until_ready(self, timeout: int = 60) -> bool:
-        if not self.api_key:
-            self.log(f"no API key configured ({self.key_env}), skipping")
-            return False
-
-        import socket
-
-        parsed = urlparse(self.url)
-        host = parsed.hostname
-        port = parsed.port or 80
-
-        try:
-            socket.setdefaulttimeout(5)
-            socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-        except (socket.gaierror, OSError):
-            self.log(f"ERROR: {self.name} DNS lookup failed for {host}")
-            return False
-        finally:
-            socket.setdefaulttimeout(None)
-
-        self.log(f"waiting for {self.name}...")
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                req = urllib.request.Request(
-                    f"{self.url}/api/v1/system/status",
-                    headers=self._headers(),
-                )
-                with urllib.request.urlopen(req, timeout=5):
-                    self.log(f"{self.name} ready")
-                    return True
-            except Exception:
-                pass
-            time.sleep(1)
-        self.log(f"ERROR: {self.name} not ready after {timeout}s")
-        return False
-
-    def is_reachable(self) -> bool:
-        try:
-            req = urllib.request.Request(
-                f"{self.url}/api/v1/system/status",
-                headers=self._headers(),
-            )
-            with urllib.request.urlopen(req, timeout=5):
-                return True
-        except (urllib.error.URLError, OSError):
-            self.log(f"ERROR: not reachable at {self.url}")
-            return False
+    api_prefix = "api/v1"  # Prowlarr is v1, not v3
 
     # ── Export ────────────────────────────────────────
 
@@ -155,7 +67,13 @@ class ProwlarrModule(AppModule):
         fields = idx.get("fields", [])
         if fields:
             stripped_fields = sorted(
-                [{"name": f["name"], "value": f.get("value")} for f in fields],
+                [
+                    {
+                        "name": f["name"],
+                        "value": REDACTED if (_is_secret_field(f) and f.get("value")) else f.get("value"),
+                    }
+                    for f in fields
+                ],
                 key=lambda x: x["name"],
             )
             result["fields"] = stripped_fields
@@ -184,31 +102,63 @@ class ProwlarrModule(AppModule):
     # ── Sync ──────────────────────────────────────────
 
     def sync(self):
-        self._sync_indexers()
-        self._sync_host_config()
+        self.run_steps([
+            ("indexers", self._sync_indexers),
+            ("host config", self._sync_host_config),
+        ])
+
+    @staticmethod
+    def _normalize_sentinels(di: dict) -> dict:
+        """Map any secret sentinel in desired fields to REDACTED for comparison."""
+        out = dict(di)
+        if "fields" in out:
+            out["fields"] = [
+                {**f, "value": REDACTED if is_secret_sentinel(f.get("value")) else f.get("value")}
+                for f in out["fields"]
+            ]
+        return out
+
+    @staticmethod
+    def _merge_fields(base_fields: list, desired_fields: list) -> list:
+        """Overlay desired [{name,value}] onto base fields BY NAME.
+
+        Sentinel values are never applied: the base (remote) value is kept.
+        """
+        merged = copy.deepcopy(base_fields)
+        by_name = {f["name"]: f for f in merged}
+        for df in desired_fields:
+            name = df["name"]
+            if is_secret_sentinel(df.get("value")):
+                continue
+            if name in by_name:
+                by_name[name]["value"] = df.get("value")
+            else:
+                merged.append({"name": name, "value": df.get("value")})
+        return merged
 
     def _sync_indexers(self):
         desired = self.load_json("indexers.json")
         if desired is None:
-            if self.is_bootstrap_mode():
-                self.log("BOOTSTRAP: no indexers exported yet — skipping sync (run export first)")
-                return
-            desired = []
+            return
 
         remote = self.api_get("indexer")
         remote_by_name = {idx["name"]: idx for idx in remote}
+        schemas = None  # lazy-fetched on first create (large payload)
         changes = 0
 
         for di in desired:
             name = di["name"]
             if name in remote_by_name:
                 remote_idx = remote_by_name[name]
-                if self._strip_indexer(remote_idx) != di:
+                if self._strip_indexer(remote_idx) != self._normalize_sentinels(di):
                     if self.mode == "diff":
                         self.log(f"indexer '{name}': would update")
                     else:
                         merged = copy.deepcopy(remote_idx)
-                        merged.update(di)
+                        merged.update({k: v for k, v in di.items() if k != "fields"})
+                        merged["fields"] = self._merge_fields(
+                            remote_idx.get("fields", []), di.get("fields", [])
+                        )
                         merged["id"] = remote_idx["id"]
                         self.api_put(f"indexer/{remote_idx['id']}", merged)
                         self.log(f"indexer '{name}': updated")
@@ -219,7 +169,8 @@ class ProwlarrModule(AppModule):
                 if self.mode == "diff":
                     self.log(f"indexer '{name}': would create")
                 else:
-                    schemas = self.api_get("indexer/schema")
+                    if schemas is None:
+                        schemas = self.api_get("indexer/schema") or []
                     template = next(
                         (s for s in schemas if s.get("implementation") == di.get("implementation")),
                         None,
@@ -229,9 +180,26 @@ class ProwlarrModule(AppModule):
                             f"WARNING: no schema for implementation '{di.get('implementation')}' — skipping '{name}'"
                         )
                         continue
+                    masked = sorted(
+                        f["name"] for f in di.get("fields", [])
+                        if is_secret_sentinel(f.get("value")) or self.has_placeholder(f.get("value"))
+                    )
+                    if masked:
+                        # See radarr: a create without its secret fails
+                        # Prowlarr's test-on-save, so skip rather than 400 forever.
+                        self.log(
+                            f"WARNING: cannot create indexer '{name}': secret field "
+                            f"'{masked[0]}' is masked in indexers.json — create it once in "
+                            "the UI with this exact name (or set a ${VAR} placeholder), after "
+                            "which sync will manage it"
+                        )
+                        continue
                     new_idx = copy.deepcopy(template)
                     new_idx.pop("id", None)
-                    new_idx.update(di)
+                    new_idx.update({k: v for k, v in di.items() if k != "fields"})
+                    new_idx["fields"] = self._merge_fields(
+                        template.get("fields", []), di.get("fields", [])
+                    )
                     self.api_post("indexer", new_idx)
                     self.log(f"indexer '{name}': created")
                 changes += 1
@@ -254,12 +222,9 @@ class ProwlarrModule(AppModule):
         if desired is None:
             return
 
-        # Expand ${VAR} placeholders from the environment.
-        # Unset env vars expand to "" — convert back to <REDACTED>.
-        desired = self.expand_env(desired)
-        for k, _env in HOST_SECRET_ENV_MAPPING.items():
-            if desired.get(k) == "":
-                desired[k] = REDACTED
+        # Expand ${VAR} placeholders; unresolved ones become <REDACTED> and
+        # are skipped below so the live value is preserved.
+        desired = self.expand_env_or_redact(desired)
 
         remote = self.api_get("config/host")
         remote_stripped = {k: v for k, v in remote.items() if k != "id"}
@@ -270,7 +235,8 @@ class ProwlarrModule(AppModule):
                 continue
             if remote_stripped.get(k) != v:
                 if self.mode == "diff":
-                    self.log(f"host config: {k} {remote_stripped.get(k)!r} -> {v!r}")
+                    shown = "***" if k in HOST_SECRET_KEYS else repr(v)
+                    self.log(f"host config: {k} {remote_stripped.get(k)!r} -> {shown}")
                 else:
                     changed[k] = v
 

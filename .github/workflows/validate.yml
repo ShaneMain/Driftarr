@@ -12,11 +12,17 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same ref supersedes an in-flight validation.
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Scan for leaked secrets (gitleaks)
         run: |
@@ -26,10 +32,16 @@ jobs:
           # scan the actual working tree, and yield stable path-based fingerprints
           # for .gitleaksignore (SHA-based fingerprints change every push). Pinned
           # binary (not gitleaks-action) for a self-contained, version-pinned scan.
+          # A release tag is mutable, so the asset's SHA-256 is pinned too —
+          # bump GLVER and GLSHA together (sha256 from the release's
+          # gitleaks_<ver>_checksums.txt).
+          set -o pipefail
           GLVER=v8.30.1
+          GLSHA=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
           ASSET="gitleaks_${GLVER#v}_linux_x64.tar.gz"
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${GLVER}/${ASSET}" \
-            | tar -xz -C /tmp gitleaks
+          curl -sSLo /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/${GLVER}/${ASSET}"
+          echo "${GLSHA}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           /tmp/gitleaks detect --source=. --no-banner --redact --verbose --no-git
           echo "✅ No leaked secrets detected"
 
@@ -115,10 +127,19 @@ jobs:
         run: |
           # Every tracked shell script, not just deploy/ — pre-deploy hooks and
           # cron-invoked scripts were previously unchecked.
+          # Note: `bash -n "$f" && echo` would exempt the failure from errexit,
+          # so collect an explicit flag instead.
+          rc=0
           while read -r f; do
-            bash -n "$f" && echo "  ✅ $f"
+            if bash -n "$f"; then
+              echo "  ✅ $f"
+            else
+              echo "::error::$f failed bash -n"
+              rc=1
+            fi
           done < <(git ls-files -- '*.sh')
-          echo "✅ All shell scripts syntax OK"
+          [ "$rc" = 0 ] && echo "✅ All shell scripts syntax OK"
+          exit $rc
 
       - name: Check script executable bits
         run: |
@@ -132,7 +153,7 @@ jobs:
           while read -r mode _hash _stage path; do
             need_exec=0
             case "$path" in
-              *pre-deploy.sh|*post-deploy.sh) need_exec=1 ;;
+              *pre-deploy.sh|*post-deploy.sh|.githooks/*|scripts/secret-guard.sh) need_exec=1 ;;
               *)
                 if [ -n "$crontab_refs" ] && printf '%s' "$crontab_refs" | grep -qF -- "$path"; then
                   need_exec=1
@@ -143,7 +164,7 @@ jobs:
               echo "::error::$path is mode $mode in the index but must be executable (100755)"
               rc=1
             fi
-          done < <(git ls-files -s -- '*.sh')
+          done < <(git ls-files -s -- '*.sh' '.githooks/*')
           [ "$rc" = 0 ] && echo "✅ script executable bits OK"
           exit $rc
 
@@ -181,6 +202,7 @@ jobs:
           [ -d tests/deploy ] || { echo "no tests/deploy — skipping"; exit 0; }
           sudo apt-get update -qq && sudo apt-get install -y -qq bats
           bats tests/deploy/
+          if [ -d tests/guard ]; then bats tests/guard/; fi
 
       - name: Check file structure
         run: |

@@ -20,6 +20,13 @@ SCRIPT_CHANGES=""
 CRONTAB_OK=false
 CONFIG_SYNC_OK=false
 
+# ── Deploy lock ───────────────────────────────────────
+# Shared with configs/run-export.sh (the export cron must not commit while a
+# deploy has configs/ or a stack dir checked out at BEFORE). deploy.sh takes
+# the lock before sourcing this file, so it defines the same default itself;
+# keep the two in sync.
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-$REPO_DIR/.deploy.lock}"
+
 # ── Stack Configuration ──────────────────────────────
 # Read a stack.conf value with a default fallback.
 # Usage: stack_conf <stack_dir> <key> <default>
@@ -92,11 +99,83 @@ compose_cmd() {
 
 snapshot_containers() {
   local stack_dir="$1"
-  if [ "$stack_dir" = "root" ]; then
-    docker compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true
+  compose_cmd "$stack_dir" ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true
+}
+
+# Machine-readable container table for the deploy gates: one container per
+# line, tab-separated "name state health exitcode". The gates test the STATE
+# and HEALTH columns exactly — never the human "Status" string, and never the
+# name — so a container called uptime-kuma, backup or syncthing can't satisfy
+# (or trip) a match meant for "Up"/"healthy"/"sync".
+# Usage: container_table <stack> [extra ps args...]   e.g. container_table media -a
+container_table() {
+  local stack="$1"; shift
+  compose_cmd "$stack" ps "$@" --format $'{{.Name}}\t{{.State}}\t{{.Health}}\t{{.ExitCode}}' 2>/dev/null || true
+}
+
+# One-shot services (config-sync, db-migrate, ...) are expected to exit; the
+# deploy waits for them instead of treating "exited" as a failure. Matched on
+# whole name components so "syncthing" or "rsync-server" are NOT one-shots.
+is_oneshot_name() {
+  [[ "$1" =~ (^|[-_])(sync|oneshot|migrate)([-_]|$) ]]
+}
+
+# ── Stack enumeration ─────────────────────────────────
+# The root docker-compose.yml `include:` list is the on/off switch for stacks:
+# commenting a stack out there must stop the pipeline deploying it (and drift
+# detection re-adding it). Prints enabled stack names, one per line. Accepted
+# entry forms (quotes optional, comments stripped, leading ./ normalised):
+#   - media/docker-compose.yml         - ./media/docker-compose.yml
+#   - path: media/docker-compose.yml   - path:
+#                                          media/docker-compose.yml
+#   include: [media/docker-compose.yml, dns/docker-compose.yml]
+# The stack name is the compose file's parent directory relative to REPO_DIR
+# (so nested "stacks/media/docker-compose.yml" yields "stacks/media").
+# Falls back to every top-level dir holding a docker-compose.yml when the root
+# file has no include: block — or, with a loud warning, when the block parses
+# to nothing (a syntax the parser doesn't know must not deploy NOTHING).
+_glob_stacks() {
+  local d
+  for d in "$REPO_DIR"/*/; do
+    [ -f "$d/docker-compose.yml" ] && basename "$d"
+  done
+}
+
+enabled_stacks() {
+  local root="$REPO_DIR/docker-compose.yml" parsed
+  if [ -f "$root" ] && grep -qE '^include:' "$root"; then
+    parsed=$(awk '
+      function emit(line,   m) {
+        gsub(/#.*/, "", line)                                # strip comments
+        while (match(line, /[A-Za-z0-9._\/-]*docker-compose\.ya?ml/)) {
+          m = substr(line, RSTART, RLENGTH)
+          line = substr(line, RSTART + RLENGTH)
+          sub(/\/?docker-compose\.ya?ml$/, "", m)          # parent dir
+          sub(/^\.\//, "", m)                               # leading ./
+          if (m != "" && m != ".") print m
+        }
+      }
+      /^include:/ {
+        if ($0 ~ /^include:[[:space:]]*\[/) { emit($0); inblock=0 } else inblock=1
+        next
+      }
+      inblock && /^[^[:space:]#]/ { inblock=0 }               # next top-level key
+      inblock { emit($0) }
+    ' "$root" | awk '!seen[$0]++')
+    if [ -n "$parsed" ]; then
+      printf '%s\n' "$parsed"
+    else
+      warn "root docker-compose.yml has an include: block but no parsable stack entries — falling back to every */docker-compose.yml"
+      _glob_stacks
+    fi
   else
-    docker compose -p "$stack_dir" -f "$REPO_DIR/$stack_dir/docker-compose.yml" ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true
+    _glob_stacks
   fi
+}
+
+# Is <stack> in the enabled set? (exact name match)
+stack_enabled() {
+  enabled_stacks | grep -qx "$1"
 }
 
 # ── File Checksum (for drift detection) ───────────────
@@ -113,6 +192,8 @@ stack_file_hash() {
     git -C "$REPO_DIR" ls-files -z -- "$rel" \
       | grep -zv 'docker-compose\.yml$' \
       | (cd "$REPO_DIR" && xargs -0 -r md5sum)
-    [ -f "$REPO_DIR/common.yml" ] && md5sum "$REPO_DIR/common.yml"
+    # `if`, not `[ -f ] &&`: a missing common.yml must not make the brace group
+    # exit 1 and (via pipefail + errexit) abort the whole deploy silently.
+    if [ -f "$REPO_DIR/common.yml" ]; then md5sum "$REPO_DIR/common.yml"; fi
   } 2>/dev/null | sort | md5sum | awk '{print $1}'
 }

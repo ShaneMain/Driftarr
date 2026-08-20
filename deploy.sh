@@ -15,7 +15,7 @@ exec 2>&1
 trap '' PIPE
 
 # ── Configuration ─────────────────────────────────────
-REPO_DIR="${DEPLOY_REPO_DIR:-/home/$USER/docker-stacks}"
+REPO_DIR="${DEPLOY_REPO_DIR:-/home/${USER:-$(id -un)}/docker-stacks}"
 LOG_TAG="${DEPLOY_LOG_TAG:-driftarr}"
 BRANCH="${DEPLOY_BRANCH:-main}"
 BUILD_STACKS="${DEPLOY_BUILD_STACKS:-}"
@@ -28,9 +28,16 @@ cd "$REPO_DIR"
 # checkout window. GitHub's concurrency group only serializes Actions runs, not
 # an Actions run racing a manual server-side deploy. flock releases the fd
 # automatically on any exit (including SIGKILL), so there is no stale lock.
-exec 9>"$REPO_DIR/.deploy.lock"
-if ! flock -n 9; then
-  echo "⚠️  Another deploy is already in progress ($REPO_DIR/.deploy.lock) — aborting." >&2
+# Wait (bounded) rather than fail fast: a CI deploy that arrives during a
+# manual run must be queued, not dropped — otherwise its commit is never
+# deployed until the next push. configs/run-export.sh takes the same lock
+# (non-blocking) so the export cron can't commit mid-rollback; the default
+# path is duplicated in deploy/lib.sh (DEPLOY_LOCK_FILE) — keep them in sync.
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-$REPO_DIR/.deploy.lock}"
+DEPLOY_LOCK_TIMEOUT="${DEPLOY_LOCK_TIMEOUT:-1500}"
+exec 9>"$DEPLOY_LOCK_FILE"
+if ! flock -w "$DEPLOY_LOCK_TIMEOUT" 9; then
+  echo "⚠️  Another deploy held $DEPLOY_LOCK_FILE for ${DEPLOY_LOCK_TIMEOUT}s — giving up." >&2
   exit 1
 fi
 

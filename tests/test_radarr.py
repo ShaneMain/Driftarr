@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 
 class TestRadarrInit:
     def test_attributes(self, radarr):
@@ -108,15 +110,16 @@ class TestRadarrSyncCustomFormats:
                 radarr._sync_custom_formats()
                 mock_del.assert_called_once_with("customformat/5")
 
-    def test_missing_file_non_bootstrap_deletes_all(self, radarr):
-        # No file written, but not in bootstrap mode
+    def test_missing_file_skips_without_deleting(self, radarr):
+        """M5: a missing file is 'nothing declared', never 'delete everything'."""
         with patch.object(radarr, 'is_bootstrap_mode', return_value=False):
-            with patch.object(radarr, 'api_get', return_value=[
-                {"id": 1, "name": "X", "specifications": []},
-            ]):
-                with patch.object(radarr, 'api_delete') as mock_del:
-                    radarr._sync_custom_formats()
-                    mock_del.assert_called_once()
+            with patch.object(radarr, 'api_get') as mock_get, \
+                 patch.object(radarr, 'api_delete') as mock_del:
+                radarr._sync_custom_formats()
+                radarr._sync_root_folders()
+                radarr._sync_profile_scores()
+                mock_get.assert_not_called()
+                mock_del.assert_not_called()
 
     def test_missing_file_bootstrap_skips(self, radarr):
         # No file, bootstrap mode — should not delete
@@ -135,6 +138,20 @@ class TestRadarrSyncSingletons:
                 sent = mock_put.call_args[0][1]
                 assert sent["renameMovies"] is True
                 assert sent["id"] == 1  # ID injected for PUT
+
+    def test_naming_ignores_remote_only_keys_and_puts_merged(self, radarr):
+        """M4: a newer *arr adding a key must not cause perpetual updates, and
+        the PUT must carry remote-only keys so the server doesn't reset them."""
+        radarr.write_json("naming.json", {"renameMovies": True})
+        with patch.object(radarr, 'api_get', return_value={"id": 1, "renameMovies": True, "newKey": "x"}):
+            with patch.object(radarr, 'api_put') as mock_put:
+                radarr._sync_naming()
+                mock_put.assert_not_called()
+        with patch.object(radarr, 'api_get', return_value={"id": 1, "renameMovies": False, "newKey": "x"}):
+            with patch.object(radarr, 'api_put') as mock_put:
+                radarr._sync_naming()
+                sent = mock_put.call_args[0][1]
+                assert sent == {"id": 1, "renameMovies": True, "newKey": "x"}
 
     def test_naming_skips_when_in_sync(self, radarr):
         radarr.write_json("naming.json", {"renameMovies": True})
@@ -172,6 +189,40 @@ class TestRadarrSyncRootFolders:
                 with patch.object(radarr, 'api_delete') as mock_del:
                     radarr._sync_root_folders()
                     mock_del.assert_called_once_with("rootfolder/1")
+
+
+class TestRadarrSyncProfileScores:
+    def test_extra_remote_profile_is_not_deleted(self, radarr, capsys):
+        """H6: profiles not in the file are reported, never deleted."""
+        radarr.write_json("profile-scores.json", {"Keep": {"minFormatScore": 0, "cutoffFormatScore": 0}})
+        profiles = [
+            {"id": 1, "name": "Keep", "minFormatScore": 0, "cutoffFormatScore": 0, "formatItems": []},
+            {"id": 2, "name": "Extra", "minFormatScore": 0, "cutoffFormatScore": 0, "formatItems": []},
+        ]
+        with patch.object(radarr, 'api_get', return_value=profiles), \
+             patch.object(radarr, 'api_delete') as mock_del, \
+             patch.object(radarr, 'api_put') as mock_put:
+            radarr._sync_profile_scores()
+        mock_del.assert_not_called()
+        mock_put.assert_not_called()
+        assert "profile 'Extra': not in profile-scores.json" in capsys.readouterr().out
+
+
+class TestRadarrSyncStepIsolation:
+    def test_failing_step_does_not_skip_later_steps(self, radarr):
+        """H6: sync() runs every step, then raises a summary."""
+        order = []
+        with patch.object(radarr, '_sync_custom_formats', side_effect=RuntimeError("400 in use")), \
+             patch.object(radarr, '_sync_profile_scores', side_effect=lambda: order.append("profiles")), \
+             patch.object(radarr, '_sync_quality_definitions', side_effect=lambda: order.append("qd")), \
+             patch.object(radarr, '_sync_naming', side_effect=lambda: order.append("naming")), \
+             patch.object(radarr, '_sync_media_management', side_effect=lambda: order.append("mm")), \
+             patch.object(radarr, '_sync_root_folders', side_effect=lambda: order.append("rf")), \
+             patch.object(radarr, '_sync_download_clients', side_effect=lambda: order.append("dc")), \
+             patch.object(radarr, '_sync_notifications', side_effect=lambda: order.append("notif")):
+            with pytest.raises(RuntimeError, match="custom formats: 400 in use"):
+                radarr.sync()
+        assert order == ["profiles", "qd", "naming", "mm", "rf", "dc", "notif"]
 
 
 class TestRadarrSyncDownloadClients:
@@ -276,6 +327,66 @@ class TestRadarrSyncNotifications:
         fields = {f["name"]: f["value"] for f in posted["fields"]}
         assert fields["path"] == "/usr/local/bin/freeleech-gate.sh"
         assert "arguments" in fields
+
+    def test_create_with_masked_secret_is_skipped_not_posted(self, radarr, capsys):
+        """H4: never POST a mask as the secret — and don't POST without it either
+        (*arr validates on create → 400 every deploy). Skip with a warning."""
+        desired = [{
+            "name": "emby",
+            "implementation": "MediaBrowser",
+            "fields": [
+                {"name": "host", "value": "emby"},
+                {"name": "apiKey", "value": "********"},
+            ],
+        }]
+        radarr.write_json("notifications.json", desired)
+        schema = [{"implementation": "MediaBrowser",
+                   "fields": [{"name": "host", "value": ""}, {"name": "apiKey", "value": ""}]}]
+
+        def api_get(endpoint):
+            return [] if endpoint == "notification" else schema
+
+        with patch.object(radarr, 'api_get', side_effect=api_get), \
+             patch.object(radarr, 'api_post') as mock_post:
+            radarr._sync_notifications()  # must not raise
+        mock_post.assert_not_called()
+        out = capsys.readouterr().out
+        assert "WARNING: cannot create notification 'emby': secret field 'apiKey' is masked" in out
+
+    def test_create_with_unresolved_placeholder_is_skipped(self, radarr):
+        desired = [{"name": "n", "implementation": "X",
+                    "fields": [{"name": "apiKey", "value": "${NOT_SET_KEY}"}]}]
+        radarr.write_json("notifications.json", desired)
+        schema = [{"implementation": "X", "fields": [{"name": "apiKey", "value": ""}]}]
+        with patch.object(radarr, 'api_get', side_effect=lambda e: [] if e == "notification" else schema), \
+             patch.object(radarr, 'api_post') as mock_post:
+            radarr._sync_notifications()
+        mock_post.assert_not_called()
+
+    def test_create_with_all_fields_resolved_posts(self, radarr):
+        desired = [{"name": "emby", "implementation": "MediaBrowser",
+                    "fields": [{"name": "apiKey", "value": "realkey"}]}]
+        radarr.write_json("notifications.json", desired)
+        schema = [{"implementation": "MediaBrowser", "fields": [{"name": "apiKey", "value": ""}]}]
+        with patch.object(radarr, 'api_get', side_effect=lambda e: [] if e == "notification" else schema), \
+             patch.object(radarr, 'api_post') as mock_post:
+            radarr.sync()  # full sync: skip path is not a step error
+        fields = {f["name"]: f["value"] for f in mock_post.call_args[0][1]["fields"]}
+        assert fields == {"apiKey": "realkey"}
+
+    def test_update_keeps_live_secret_when_file_has_mask(self, radarr):
+        desired = [{
+            "name": "emby",
+            "implementation": "MediaBrowser",
+            "fields": [{"name": "apiKey", "value": "********"}],
+        }]
+        radarr.write_json("notifications.json", desired)
+        remote = [{"id": 7, "name": "emby", "implementation": "MediaBrowser",
+                   "fields": [{"name": "apiKey", "value": "realkey"}]}]
+        with patch.object(radarr, 'api_get', return_value=remote), \
+             patch.object(radarr, 'api_put') as mock_put:
+            radarr._sync_notifications()
+        mock_put.assert_not_called()
 
     def test_noop_when_existing_matches(self, radarr):
         radarr.write_json("notifications.json", _gate_desired())

@@ -149,26 +149,23 @@ deploy_stack() {
   while [ $health_wait -lt "$timeout" ]; do
     sleep 10
     health_wait=$((health_wait + 10))
-    local current_state
-    current_state=$(snapshot_containers "$stack")
-    # Match the healthcheck grace state specifically — a bare 'starting' also
-    # matches "Restarting (1)...", letting crash-looping containers pass as
-    # still-starting (found via caddy crash-loop, 2026-07)
-    if ! echo "$current_state" | grep -qi 'health: starting'; then
+    # Test the health COLUMN for the healthcheck grace state — a bare
+    # 'starting' substring also matches "Restarting (1)...", letting
+    # crash-looping containers pass as still-starting (caddy crash-loop, 2026-07)
+    if ! container_table "$stack" | awk -F'\t' '$3 == "starting" {found=1} END {exit !found}'; then
       break
     fi
     [ $((health_wait % 30)) -eq 0 ] && log "Still waiting for health checks... (${health_wait}s)"
   done
 
-  # Wait for one-shot containers to finish
+  # Wait for one-shot containers to finish (matched on whole name components
+  # via is_oneshot_name — "syncthing" must not block here for 120s).
   local oneshot_running=true wait_count=0
   while [ "$oneshot_running" = true ] && [ $wait_count -lt 120 ]; do
-    local exited_check
-    if [ "$stack" = "root" ]; then
-      exited_check=$(docker compose ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'sync\|oneshot\|migrate' || true)
-    else
-      exited_check=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps --status=running --format '{{.Name}}' 2>/dev/null | grep -c 'sync\|oneshot\|migrate' || true)
-    fi
+    local exited_check=0 _name _state _rest
+    while IFS=$'\t' read -r _name _state _rest; do
+      [ "$_state" = "running" ] && is_oneshot_name "$_name" && exited_check=$((exited_check + 1))
+    done < <(container_table "$stack")
     if [ "$exited_check" -gt 0 ]; then
       [ $wait_count -eq 0 ] && log "Waiting for one-shot containers to finish..."
       sleep 5
@@ -194,17 +191,25 @@ deploy_stack() {
     return 1
   fi
 
-  # Health checks
+  # Health checks — evaluated on the exact state/health columns of
+  # container_table (name<TAB>state<TAB>health<TAB>exitcode), never on the
+  # whole "name status" line: a container NAMED uptime-kuma or backup used to
+  # slip past a case-insensitive grep for "Up"/"healthy" while restarting.
+  local gate_table
+  gate_table=$(container_table "$stack" -a)
+
   local unhealthy
-  unhealthy=$(echo "$after_state" | grep -i 'unhealthy' || true)
+  unhealthy=$(echo "$gate_table" | awk -F'\t' '$3 == "unhealthy" {print $1" ("$3")"}')
   if [ -n "$unhealthy" ]; then
     warn "Unhealthy containers detected in $stack:"
     echo "$unhealthy" | while read -r line; do warn "  $line"; done
     return 1
   fi
 
+  # Anything not running is a failure unless it is a clean exit (code 0) —
+  # that is how finished one-shots look.
   local exited
-  exited=$(echo "$after_state" | grep -ivE '(running|healthy|Up|health: starting|Exited \(0\))' || true)
+  exited=$(echo "$gate_table" | awk -F'\t' 'NF && $2 != "running" && !($2 == "exited" && $4 == 0) {print $1" ("$2")"}')
   if [ -n "$exited" ]; then
     warn "Non-running containers detected in $stack:"
     echo "$exited" | while read -r line; do warn "  $line"; done
@@ -212,14 +217,10 @@ deploy_stack() {
   fi
 
   local failed_oneshots
-  if [ "$stack" = "root" ]; then
-    failed_oneshots=$(docker compose ps -a --format '{{.Name}} {{.ExitCode}}' 2>/dev/null | awk '$2 != 0 && $2 != ""' || true)
-  else
-    failed_oneshots=$(docker compose -p "$stack" -f "$REPO_DIR/$stack/docker-compose.yml" ps -a --format '{{.Name}} {{.ExitCode}}' 2>/dev/null | awk '$2 != 0 && $2 != ""' || true)
-  fi
+  failed_oneshots=$(echo "$gate_table" | awk -F'\t' 'NF && $4 != "" && $4 != 0 {print $1" (exit code: "$4")"}')
   if [ -n "$failed_oneshots" ]; then
     warn "Failed one-shot containers in $stack:"
-    echo "$failed_oneshots" | while read -r line; do warn "  $line (exit code: $(echo "$line" | awk '{print $2}'))"; done
+    echo "$failed_oneshots" | while read -r line; do warn "  $line"; done
     return 1
   fi
 

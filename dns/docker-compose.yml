@@ -19,11 +19,11 @@ services:
     image: adguard/adguardhome:latest
     container_name: adguard
     ports:
-      - "${DNS_SERVER_IP}:53:53/udp"
-      - "${DNS_SERVER_IP}:53:53/tcp"
+      - "${DNS_SERVER_IP:?DNS_SERVER_IP must be set in .env (LAN IP to bind port 53)}:53:53/udp"
+      - "${DNS_SERVER_IP:?DNS_SERVER_IP must be set in .env (LAN IP to bind port 53)}:53:53/tcp"
       - "3005:80"
     environment:
-      - DNS_SERVER_IP=${DNS_SERVER_IP}
+      - DNS_SERVER_IP=${DNS_SERVER_IP:?DNS_SERVER_IP must be set in .env}
     volumes:
       - ./AdGuardHome.yaml:/seed/AdGuardHome.yaml:ro
       - adguard_conf:/opt/adguardhome/conf
